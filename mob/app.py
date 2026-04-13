@@ -17,9 +17,10 @@ HOP_ROOM = 3
 
 
 class CreatureScene(Static):
-    """Renders the creature at (x, y_lift) inside a bottom-docked band."""
+    """Renders the creature at absolute (x, y), with optional hop lift."""
 
     x: reactive[int] = reactive(4)
+    y: reactive[int] = reactive(0)
     y_lift: reactive[int] = reactive(0)
     pose: reactive[str] = reactive("idle")
 
@@ -31,9 +32,8 @@ class CreatureScene(Static):
         art = self.animal.poses[self.pose].strip("\n").split("\n")
         pad = " " * max(0, self.x)
         shifted = [pad + line for line in art]
-        top = [""] * max(0, HOP_ROOM - self.y_lift)
-        bottom = [""] * max(0, self.y_lift)
-        return "\n".join(top + shifted + bottom)
+        top_count = max(0, self.y - self.y_lift)
+        return "\n".join([""] * top_count + shifted)
 
 
 class MobApp(App):
@@ -84,6 +84,12 @@ class MobApp(App):
         if self.animal.behavior.secondary_idles:
             self.set_interval(6.0, self._maybe_secondary_idle)
         self._schedule_next_burst()
+
+    def _art_height(self) -> int:
+        return len(self.animal.poses["idle"].strip("\n").split("\n"))
+
+    def _max_y(self) -> int:
+        return max(HOP_ROOM, self.size.height - self._art_height())
 
     # ------------------------------------------------------------------
     # burst scheduling — long sits, clustered hops
@@ -193,15 +199,27 @@ class MobApp(App):
     def _start_random_crawl(self) -> None:
         width = max(self.animal.width, self.size.width)
         max_x = max(0, width - self.animal.width)
+        max_y = self._max_y()
+
         lo, hi = self.animal.behavior.crawl_distance
         distance = random.randint(lo, hi)
         direction = random.choice([-1, 1])
-        target = self.scene.x + direction * distance
-        if target < 0 or target > max_x:
+        target_x = self.scene.x + direction * distance
+        if target_x < 0 or target_x > max_x:
             direction = -direction
-            target = self.scene.x + direction * distance
-        target = max(0, min(max_x, target))
-        if target == self.scene.x:
+            target_x = self.scene.x + direction * distance
+        target_x = max(0, min(max_x, target_x))
+
+        # Vertical target: usually a modest drift, occasionally a bigger
+        # climb or drop so the cat explores the full terminal over time.
+        if random.random() < 0.25:
+            vertical_range = max_y
+        else:
+            vertical_range = 6
+        target_y = self.scene.y + random.randint(-vertical_range, vertical_range)
+        target_y = max(HOP_ROOM, min(max_y, target_y))
+
+        if target_x == self.scene.x and target_y == self.scene.y:
             self.call_after_refresh(self._continue_burst)
             return
         pose = "walk_left" if direction < 0 else "walk_right"
@@ -209,19 +227,38 @@ class MobApp(App):
             pose = "idle"
         self._hopping = True
         self.scene.pose = pose
-        self._crawl_step(target, 1 if direction > 0 else -1)
+        step_x = 1 if direction > 0 else -1
+        self._crawl_step(target_x, target_y, step_x)
 
-    def _crawl_step(self, target_x: int, step: int) -> None:
-        if self._asleep or self.scene.x == target_x:
+    def _crawl_step(self, target_x: int, target_y: int, step_x: int) -> None:
+        arrived = self.scene.x == target_x and self.scene.y == target_y
+        if self._asleep or arrived:
             self._hopping = False
             if not self._asleep and not self._busy_pose:
                 self.scene.pose = "idle"
             self.set_timer(random.uniform(0.8, 2.0), self._continue_burst)
             return
-        self.scene.x += step
+
+        if self.scene.x != target_x:
+            self.scene.x += step_x
+
+        # Move y probabilistically, weighted by how much vertical distance
+        # remains relative to horizontal — keeps the path roughly diagonal.
+        if self.scene.y != target_y:
+            remaining_x = max(1, abs(target_x - self.scene.x))
+            remaining_y = abs(target_y - self.scene.y)
+            if remaining_y >= remaining_x or random.random() < remaining_y / remaining_x:
+                self.scene.y += 1 if target_y > self.scene.y else -1
+
+        base = self.animal.behavior.crawl_step_seconds
+        # Wider jitter + occasional pause. Lower bound is much smaller so
+        # the cat can briefly sprint when it commits to a direction.
+        if random.random() < 0.08:
+            delay = base * random.uniform(2.5, 5.0)
+        else:
+            delay = base * random.uniform(0.25, 1.6)
         self.set_timer(
-            self.animal.behavior.crawl_step_seconds,
-            lambda: self._crawl_step(target_x, step),
+            delay, lambda: self._crawl_step(target_x, target_y, step_x)
         )
 
     def _run_frames(self, frames: list[tuple[int, int]]) -> None:
@@ -279,6 +316,12 @@ class MobApp(App):
         max_x = max(0, self.size.width - self.animal.width)
         if self.scene.x > max_x:
             self.scene.x = max_x
+        max_y = self._max_y()
+        # Hoppers sit on the floor; crawlers keep their current row, clamped.
+        if self.animal.behavior.movement == "hop" or self.scene.y == 0:
+            self.scene.y = max_y
+        else:
+            self.scene.y = min(max_y, max(HOP_ROOM, self.scene.y))
 
 
 def main() -> None:
