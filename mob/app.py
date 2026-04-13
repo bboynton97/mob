@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import random
 
 from textual.app import App, ComposeResult
@@ -9,22 +10,25 @@ from textual.binding import Binding
 from textual.reactive import reactive
 from textual.widgets import Static
 
-from mob.art import POSES
+from mob.art import ANIMALS, Animal
 from mob.term_colors import detect_terminal_colors
 
-FROG_WIDTH = 16
 HOP_ROOM = 3
 
 
-class FrogScene(Static):
-    """Renders the frog at (x, y_lift) inside a bottom-docked band."""
+class CreatureScene(Static):
+    """Renders the creature at (x, y_lift) inside a bottom-docked band."""
 
     x: reactive[int] = reactive(4)
     y_lift: reactive[int] = reactive(0)
     pose: reactive[str] = reactive("idle")
 
+    def __init__(self, animal: Animal, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.animal = animal
+
     def render(self) -> str:
-        art = POSES[self.pose].strip("\n").split("\n")
+        art = self.animal.poses[self.pose].strip("\n").split("\n")
         pad = " " * max(0, self.x)
         shifted = [pad + line for line in art]
         top = [""] * max(0, HOP_ROOM - self.y_lift)
@@ -47,8 +51,14 @@ class MobApp(App):
         Binding("ctrl+c", "quit", show=False),
     ]
 
-    def __init__(self, fg: str | None = None, bg: str | None = None) -> None:
+    def __init__(
+        self,
+        animal: Animal,
+        fg: str | None = None,
+        bg: str | None = None,
+    ) -> None:
         super().__init__()
+        self.animal = animal
         self._fg = fg
         self._bg = bg
         self._asleep = False
@@ -57,26 +67,28 @@ class MobApp(App):
         self._hops_left_in_burst = 0
 
     @property
-    def scene(self) -> FrogScene:
-        return self.query_one(FrogScene)
+    def scene(self) -> CreatureScene:
+        return self.query_one(CreatureScene)
 
     def compose(self) -> ComposeResult:
-        yield FrogScene(id="frog")
+        yield CreatureScene(self.animal, id="creature")
 
     def on_mount(self) -> None:
+        self.title = f"mob — {self.animal.name}"
         if self._bg:
             self.screen.styles.background = self._bg
         if self._fg:
             self.screen.styles.color = self._fg
             self.scene.styles.color = self._fg
         self.set_interval(4.0, self._maybe_blink)
+        if self.animal.behavior.secondary_idles:
+            self.set_interval(6.0, self._maybe_secondary_idle)
         self._schedule_next_burst()
 
     # ------------------------------------------------------------------
     # burst scheduling — long sits, clustered hops
 
     def _schedule_next_burst(self) -> None:
-        # skewed distribution: mostly long pauses, occasional short one
         tier = random.choices(
             ["short", "medium", "long", "very_long"],
             weights=[2, 3, 4, 2],
@@ -106,7 +118,10 @@ class MobApp(App):
             self.set_timer(1.0, self._continue_burst)
             return
         self._hops_left_in_burst -= 1
-        self._start_random_hop()
+        if self.animal.behavior.movement == "crawl":
+            self._start_random_crawl()
+        else:
+            self._start_random_hop()
 
     # ------------------------------------------------------------------
     # idle
@@ -119,12 +134,25 @@ class MobApp(App):
         self.scene.pose = "blink"
         self.set_timer(0.18, lambda: setattr(self.scene, "pose", "idle"))
 
+    def _maybe_secondary_idle(self) -> None:
+        if self._asleep or self._hopping or self._busy_pose:
+            return
+        if self.scene.pose != "idle":
+            return
+        behavior = self.animal.behavior
+        if random.random() > behavior.secondary_idle_chance:
+            return
+        pose = random.choice(behavior.secondary_idles)
+        if pose not in self.animal.poses:
+            return
+        self.scene.pose = pose
+
     # ------------------------------------------------------------------
     # hopping
 
     def _start_random_hop(self) -> None:
-        width = max(FROG_WIDTH, self.size.width)
-        max_x = max(0, width - FROG_WIDTH)
+        width = max(self.animal.width, self.size.width)
+        max_x = max(0, width - self.animal.width)
         size_choice = random.choices(
             ["small", "medium", "big"], weights=[3, 3, 2]
         )[0]
@@ -142,7 +170,6 @@ class MobApp(App):
         target = max(0, min(max_x, target))
 
         if target == self.scene.x:
-            # bail on this hop, try to continue burst with the next one
             self.call_after_refresh(self._continue_burst)
             return
         self._play_hop(target)
@@ -160,12 +187,48 @@ class MobApp(App):
         self.scene.pose = "hop"
         self._run_frames(frames)
 
+    # ------------------------------------------------------------------
+    # crawling (cats and anything else that shouldn't launch itself skyward)
+
+    def _start_random_crawl(self) -> None:
+        width = max(self.animal.width, self.size.width)
+        max_x = max(0, width - self.animal.width)
+        lo, hi = self.animal.behavior.crawl_distance
+        distance = random.randint(lo, hi)
+        direction = random.choice([-1, 1])
+        target = self.scene.x + direction * distance
+        if target < 0 or target > max_x:
+            direction = -direction
+            target = self.scene.x + direction * distance
+        target = max(0, min(max_x, target))
+        if target == self.scene.x:
+            self.call_after_refresh(self._continue_burst)
+            return
+        pose = "walk_left" if direction < 0 else "walk_right"
+        if pose not in self.animal.poses:
+            pose = "idle"
+        self._hopping = True
+        self.scene.pose = pose
+        self._crawl_step(target, 1 if direction > 0 else -1)
+
+    def _crawl_step(self, target_x: int, step: int) -> None:
+        if self._asleep or self.scene.x == target_x:
+            self._hopping = False
+            if not self._asleep and not self._busy_pose:
+                self.scene.pose = "idle"
+            self.set_timer(random.uniform(0.8, 2.0), self._continue_burst)
+            return
+        self.scene.x += step
+        self.set_timer(
+            self.animal.behavior.crawl_step_seconds,
+            lambda: self._crawl_step(target_x, step),
+        )
+
     def _run_frames(self, frames: list[tuple[int, int]]) -> None:
         if not frames:
             self._hopping = False
             if not self._asleep and not self._busy_pose:
                 self.scene.pose = "idle"
-            # short pause before the next hop in the burst
             self.set_timer(random.uniform(0.25, 0.8), self._continue_burst)
             return
         x, y = frames[0]
@@ -201,7 +264,10 @@ class MobApp(App):
     def action_toy(self) -> None:
         if self._asleep or self._hopping:
             return
-        self._start_random_hop()
+        if self.animal.behavior.movement == "crawl":
+            self._start_random_crawl()
+        else:
+            self._start_random_hop()
 
     def action_sleep(self) -> None:
         self._asleep = not self._asleep
@@ -210,14 +276,24 @@ class MobApp(App):
     # ------------------------------------------------------------------
 
     def on_resize(self) -> None:
-        max_x = max(0, self.size.width - FROG_WIDTH)
+        max_x = max(0, self.size.width - self.animal.width)
         if self.scene.x > max_x:
             self.scene.x = max_x
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(prog="mob")
+    parser.add_argument(
+        "animal",
+        nargs="?",
+        default="frog",
+        choices=sorted(ANIMALS),
+        help="which critter to summon (default: frog)",
+    )
+    args = parser.parse_args()
+
     fg, bg = detect_terminal_colors()
-    MobApp(fg=fg, bg=bg).run()
+    MobApp(animal=ANIMALS[args.animal], fg=fg, bg=bg).run()
 
 
 if __name__ == "__main__":

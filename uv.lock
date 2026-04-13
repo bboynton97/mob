@@ -2,17 +2,6 @@ version = 1
 requires-python = ">=3.11"
 
 [[package]]
-name = "buddy"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "textual" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "textual", specifier = ">=0.80" }]
-
-[[package]]
 name = "linkify-it-py"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -61,6 +50,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec9
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979 },
 ]
+
+[[package]]
+name = "mob"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "textual" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "textual", specifier = ">=0.80" }]
 
 [[package]]
 name = "platformdirs"
