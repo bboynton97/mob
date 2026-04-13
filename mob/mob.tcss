@@ -1,0 +1,13 @@
+Screen {
+    background: transparent;
+    padding: 0;
+}
+
+FrogScene {
+    dock: bottom;
+    width: 100%;
+    height: 7;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+}
