@@ -3,17 +3,54 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import random
+from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Container
 from textual.reactive import reactive
-from textual.widgets import Static
+from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from mob.art import ANIMALS, Animal
 from mob.term_colors import detect_terminal_colors
 
 HOP_ROOM = 3
+
+
+def _state_path() -> Path:
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "mob" / "pets.json"
+
+
+def _load_pet_name(animal_name: str) -> str | None:
+    try:
+        data = json.loads(_state_path().read_text())
+    except (OSError, ValueError):
+        return None
+    value = data.get(animal_name) if isinstance(data, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _save_pet_name(animal_name: str, name: str | None) -> None:
+    path = _state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            data = json.loads(path.read_text())
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        if name:
+            data[animal_name] = name
+        else:
+            data.pop(animal_name, None)
+        path.write_text(json.dumps(data, indent=2))
+    except OSError:
+        pass
 
 
 class CreatureScene(Static):
@@ -23,6 +60,11 @@ class CreatureScene(Static):
     y: reactive[int] = reactive(0)
     y_lift: reactive[int] = reactive(0)
     pose: reactive[str] = reactive("idle")
+    heart_frame: reactive[int] = reactive(-1)  # -1 = hearts hidden
+
+    HEART_TOTAL = 16
+    # (dx from mob's left edge, dy above mob's top line)
+    HEART_OFFSETS = ((2, 1), (6, 2), (4, 3))
 
     def __init__(self, animal: Animal, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -33,7 +75,29 @@ class CreatureScene(Static):
         pad = " " * max(0, self.x)
         shifted = [pad + line for line in art]
         top_count = max(0, self.y - self.y_lift)
-        return "\n".join([""] * top_count + shifted)
+        lines = [""] * top_count + shifted
+
+        if self.heart_frame >= 0:
+            rows: dict[int, list[int]] = {}
+            for dx, dy in self.HEART_OFFSETS:
+                hy = self.y - self.y_lift - dy - self.heart_frame
+                hx = self.x + dx
+                if hy < 0 or hx < 0:
+                    continue
+                rows.setdefault(hy, []).append(hx)
+            for row_y, xs in rows.items():
+                xs.sort()
+                overlay = ""
+                cursor = 0
+                for x in xs:
+                    overlay += " " * max(0, x - cursor) + "[#ff69b4]♥[/]"
+                    cursor = x + 1
+                while len(lines) <= row_y:
+                    lines.append("")
+                # Heart rows sit above the mob's top line, which is always
+                # blank in the base render — safe to overwrite.
+                lines[row_y] = overlay
+        return "\n".join(lines)
 
 
 class MobApp(App):
@@ -47,6 +111,8 @@ class MobApp(App):
         Binding("p", "pet", show=False),
         Binding("t", "toy", show=False),
         Binding("s", "sleep", show=False),
+        Binding("slash", "open_commands", show=False),
+        Binding("escape", "close_commands", show=False),
         Binding("q", "quit", show=False),
         Binding("ctrl+c", "quit", show=False),
     ]
@@ -65,6 +131,7 @@ class MobApp(App):
         self._hopping = False
         self._busy_pose = False
         self._hops_left_in_burst = 0
+        self._pet_name: str | None = _load_pet_name(animal.name)
 
     @property
     def scene(self) -> CreatureScene:
@@ -72,6 +139,15 @@ class MobApp(App):
 
     def compose(self) -> ComposeResult:
         yield CreatureScene(self.animal, id="creature")
+        with Container(id="hud"):
+            yield Label("", id="name-badge")
+            yield ListView(
+                ListItem(Label("Give pet a name"), id="cmd-rename"),
+                ListItem(Label("Feed"), id="cmd-feed"),
+                ListItem(Label("Pet"), id="cmd-pet"),
+                id="cmd-list",
+            )
+            yield Input(placeholder="name your pet…", id="name-input")
 
     def on_mount(self) -> None:
         self.title = f"mob — {self.animal.name}"
@@ -80,10 +156,22 @@ class MobApp(App):
         if self._fg:
             self.screen.styles.color = self._fg
             self.scene.styles.color = self._fg
+            for selector in ("#name-badge", "#cmd-list", "#name-input"):
+                self.query_one(selector).styles.color = self._fg
+            self.query_one("#cmd-list", ListView).styles.border = (
+                "round",
+                self._fg,
+            )
+            for label in self.query("#cmd-list Label").results(Label):
+                label.styles.color = self._fg
+            self.query_one("#name-input", Input).styles.color = self._fg
         self.set_interval(4.0, self._maybe_blink)
         if self.animal.behavior.secondary_idles:
             self.set_interval(6.0, self._maybe_secondary_idle)
         self._schedule_next_burst()
+        self.query_one("#cmd-list", ListView).display = False
+        self.query_one("#name-input", Input).display = False
+        self._refresh_hud()
 
     def _art_height(self) -> int:
         return len(self.animal.poses["idle"].strip("\n").split("\n"))
@@ -289,14 +377,43 @@ class MobApp(App):
         self.set_timer(seconds, restore)
 
     def action_feed(self) -> None:
-        if self._asleep:
+        if self._asleep or self._hopping or self._busy_pose:
             return
-        self._flash_pose("eating", 1.4)
+        self._busy_pose = True
+        self._chew_ticks_left = 6  # 6 * 0.28s ≈ 1.7s total
+        self.scene.pose = "eating"
+        self.set_timer(0.28, self._chew_tick)
+
+    def _chew_tick(self) -> None:
+        if self._chew_ticks_left <= 0:
+            self._busy_pose = False
+            self.scene.pose = "sleeping" if self._asleep else "idle"
+            self._play_hearts()
+            return
+        self._chew_ticks_left -= 1
+        current = self.scene.pose
+        nxt = "eating2" if current == "eating" else "eating"
+        if nxt not in self.animal.poses:
+            nxt = "eating"
+        self.scene.pose = nxt
+        self.set_timer(0.28, self._chew_tick)
+
+    def _play_hearts(self) -> None:
+        self.scene.heart_frame = 0
+        self._heart_tick()
+
+    def _heart_tick(self) -> None:
+        if self.scene.heart_frame >= CreatureScene.HEART_TOTAL:
+            self.scene.heart_frame = -1
+            return
+        self.scene.heart_frame += 1
+        self.set_timer(0.28, self._heart_tick)
 
     def action_pet(self) -> None:
         if self._asleep:
             return
         self._flash_pose("happy", 1.4)
+        self._play_hearts()
 
     def action_toy(self) -> None:
         if self._asleep or self._hopping:
@@ -309,6 +426,59 @@ class MobApp(App):
     def action_sleep(self) -> None:
         self._asleep = not self._asleep
         self.scene.pose = "sleeping" if self._asleep else "idle"
+
+    # ------------------------------------------------------------------
+    # HUD / command palette
+
+    def _refresh_hud(self) -> None:
+        badge = self.query_one("#name-badge", Label)
+        cmd_list = self.query_one("#cmd-list", ListView)
+        name_input = self.query_one("#name-input", Input)
+        hud_open = cmd_list.display or name_input.display
+        badge.update(self._pet_name or "")
+        badge.display = bool(self._pet_name) and not hud_open
+
+    def action_open_commands(self) -> None:
+        cmd_list = self.query_one("#cmd-list", ListView)
+        name_input = self.query_one("#name-input", Input)
+        name_input.display = False
+        cmd_list.display = True
+        cmd_list.index = 0
+        self._refresh_hud()
+        cmd_list.focus()
+
+    def action_close_commands(self) -> None:
+        self.query_one("#cmd-list", ListView).display = False
+        self.query_one("#name-input", Input).display = False
+        self._refresh_hud()
+        self.set_focus(None)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.item is None:
+            return
+        if event.item.id == "cmd-rename":
+            self.query_one("#cmd-list", ListView).display = False
+            name_input = self.query_one("#name-input", Input)
+            name_input.value = ""
+            name_input.display = True
+            self._refresh_hud()
+            name_input.focus()
+        elif event.item.id == "cmd-feed":
+            self.action_close_commands()
+            self.action_feed()
+        elif event.item.id == "cmd-pet":
+            self.action_close_commands()
+            self.action_pet()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "name-input":
+            return
+        name = event.value.strip()
+        self._pet_name = name or None
+        _save_pet_name(self.animal.name, self._pet_name)
+        event.input.display = False
+        self._refresh_hud()
+        self.set_focus(None)
 
     # ------------------------------------------------------------------
 

@@ -3,10 +3,66 @@ Screen {
     padding: 0;
 }
 
+Screen {
+    layers: base hud;
+}
+
 CreatureScene {
+    layer: base;
     width: 100%;
     height: 100%;
     background: transparent;
     padding: 0;
     margin: 0;
+}
+
+#hud {
+    layer: hud;
+    dock: top;
+    width: 100%;
+    height: auto;
+    background: transparent;
+    align: right top;
+    padding: 0 1;
+}
+
+#hud > * {
+    width: auto;
+    background: transparent;
+}
+
+#name-badge {
+    height: 1;
+    color: $text;
+    padding: 0 1;
+}
+
+#cmd-list {
+    width: 28;
+    height: auto;
+    max-height: 8;
+    background: transparent;
+    border: round white;
+}
+
+#cmd-list > ListItem {
+    background: transparent;
+}
+
+#cmd-list > ListItem.--highlight {
+    background: transparent;
+    text-style: reverse;
+}
+
+#cmd-list > ListItem > Label {
+    background: transparent;
+    width: 100%;
+}
+
+#name-input {
+    width: 28;
+    height: 1;
+    background: transparent;
+    border: none;
+    padding: 0 1;
 }
