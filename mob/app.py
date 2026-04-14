@@ -443,12 +443,11 @@ class MobApp(App):
             return
         if self.scene.pose not in ("idle", "idle2"):
             return
-        if random.random() > 0.15:
+        if random.random() > 0.03:
             return
         self._asleep = True
         self.scene.pose = "sleeping"
-        if self._atuin is None:
-            self.set_timer(random.uniform(30.0, 60.0), self._auto_wake)
+        self.set_timer(random.uniform(60.0, 300.0), self._auto_wake)
 
     def _breathe_sleep(self) -> None:
         if not self._asleep or self._busy_pose or self._hopping:
@@ -459,7 +458,7 @@ class MobApp(App):
             self.scene.pose = "sleeping"
 
     def _auto_wake(self) -> None:
-        if not self._asleep or self._atuin is not None:
+        if not self._asleep:
             return
         self._asleep = False
         if not self._busy_pose and not self._hopping:
