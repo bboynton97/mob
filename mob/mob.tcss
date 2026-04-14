@@ -37,6 +37,12 @@ CreatureScene {
     padding: 0 1;
 }
 
+#update-badge {
+    height: 1;
+    padding: 0 1;
+    text-style: dim;
+}
+
 #cmd-list {
     width: 28;
     height: auto;

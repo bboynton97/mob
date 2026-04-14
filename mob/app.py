@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import random
+import sys
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -16,6 +17,7 @@ from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from mob.art import ANIMALS, Animal
 from mob.term_colors import detect_terminal_colors
+from mob.update import check_for_update, run_update
 
 HOP_ROOM = 3
 
@@ -132,6 +134,7 @@ class MobApp(App):
         self._busy_pose = False
         self._hops_left_in_burst = 0
         self._pet_name: str | None = _load_pet_name(animal.name)
+        self._update_tag: str | None = None
 
     @property
     def scene(self) -> CreatureScene:
@@ -141,6 +144,7 @@ class MobApp(App):
         yield CreatureScene(self.animal, id="creature")
         with Container(id="hud"):
             yield Label("", id="name-badge")
+            yield Label("", id="update-badge")
             yield ListView(
                 ListItem(Label("Give pet a name"), id="cmd-rename"),
                 ListItem(Label("Feed"), id="cmd-feed"),
@@ -156,7 +160,7 @@ class MobApp(App):
         if self._fg:
             self.screen.styles.color = self._fg
             self.scene.styles.color = self._fg
-            for selector in ("#name-badge", "#cmd-list", "#name-input"):
+            for selector in ("#name-badge", "#update-badge", "#cmd-list", "#name-input"):
                 self.query_one(selector).styles.color = self._fg
             self.query_one("#cmd-list", ListView).styles.border = (
                 "round",
@@ -171,6 +175,16 @@ class MobApp(App):
         self._schedule_next_burst()
         self.query_one("#cmd-list", ListView).display = False
         self.query_one("#name-input", Input).display = False
+        self._refresh_hud()
+        self.run_worker(self._check_updates_worker, thread=True, exclusive=True)
+
+    def _check_updates_worker(self) -> None:
+        tag = check_for_update()
+        if tag:
+            self.call_from_thread(self._on_update_available, tag)
+
+    def _on_update_available(self, tag: str) -> None:
+        self._update_tag = tag
         self._refresh_hud()
 
     def _art_height(self) -> int:
@@ -432,11 +446,15 @@ class MobApp(App):
 
     def _refresh_hud(self) -> None:
         badge = self.query_one("#name-badge", Label)
+        update_badge = self.query_one("#update-badge", Label)
         cmd_list = self.query_one("#cmd-list", ListView)
         name_input = self.query_one("#name-input", Input)
         hud_open = cmd_list.display or name_input.display
         badge.update(self._pet_name or "")
         badge.display = bool(self._pet_name) and not hud_open
+        if self._update_tag:
+            update_badge.update(f"update {self._update_tag} · mob update")
+        update_badge.display = bool(self._update_tag) and not hud_open
 
     def action_open_commands(self) -> None:
         cmd_list = self.query_one("#cmd-list", ListView)
@@ -495,6 +513,9 @@ class MobApp(App):
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "update":
+        sys.exit(run_update())
+
     parser = argparse.ArgumentParser(prog="mob")
     parser.add_argument(
         "animal",
