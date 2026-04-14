@@ -15,9 +15,44 @@ from textual.containers import Container
 from textual.reactive import reactive
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
+from mob import xp as xp_store
 from mob.art import ANIMALS, Animal
+from mob.atuin import AtuinPoller, CommandEvent, is_available as atuin_available
 from mob.term_colors import detect_terminal_colors
 from mob.update import check_for_update, run_update
+
+XP_PER_COMMAND = 2
+
+
+def _hex_to_rgb(value: str) -> tuple[int, int, int] | None:
+    value = value.strip().lstrip("#")
+    if len(value) != 6:
+        return None
+    try:
+        return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+    except ValueError:
+        return None
+
+
+def contrast_shift(fg_hex: str, bg_hex: str | None, amount: float = 0.35) -> str:
+    """Nudge fg toward bg so it reads as a muted version of the mob color."""
+    fg = _hex_to_rgb(fg_hex)
+    if fg is None:
+        return fg_hex
+    bg = _hex_to_rgb(bg_hex) if bg_hex else (0, 0, 0)
+    shifted = [
+        max(0, min(255, int(round(f + (b - f) * amount))))
+        for f, b in zip(fg, bg)
+    ]
+    return "#{:02x}{:02x}{:02x}".format(*shifted)
+
+
+def format_xp(xp: int) -> str:
+    for threshold, suffix in ((1_000_000_000, "b"), (1_000_000, "m"), (1_000, "k")):
+        if xp >= threshold:
+            value = xp / threshold
+            return f"{value:.1f}{suffix}" if value < 10 else f"{int(value)}{suffix}"
+    return str(xp)
 
 HOP_ROOM = 3
 
@@ -63,8 +98,11 @@ class CreatureScene(Static):
     y_lift: reactive[int] = reactive(0)
     pose: reactive[str] = reactive("idle")
     heart_frame: reactive[int] = reactive(-1)  # -1 = hearts hidden
+    toast_frame: reactive[int] = reactive(-1)  # -1 = toast hidden
+    toast_text: reactive[str] = reactive("")
 
     HEART_TOTAL = 16
+    TOAST_TOTAL = 10
     # (dx from mob's left edge, dy above mob's top line)
     HEART_OFFSETS = ((2, 1), (6, 2), (4, 3))
 
@@ -99,6 +137,15 @@ class CreatureScene(Static):
                 # Heart rows sit above the mob's top line, which is always
                 # blank in the base render — safe to overwrite.
                 lines[row_y] = overlay
+
+        if self.toast_frame >= 0 and self.toast_text:
+            toast_y = self.y - self.y_lift - 1 - self.toast_frame
+            toast_x = self.x + 1
+            if toast_y >= 0 and toast_x >= 0:
+                while len(lines) <= toast_y:
+                    lines.append("")
+                padding = " " * toast_x
+                lines[toast_y] = padding + f"[bold]{self.toast_text}[/]"
         return "\n".join(lines)
 
 
@@ -136,6 +183,8 @@ class MobApp(App):
         self._pet_name: str | None = _load_pet_name(animal.name)
         self._update_tag: str | None = None
         self._pending_update_tag: str | None = None
+        self._xp: int = xp_store.load(animal.name)
+        self._atuin: AtuinPoller | None = None
 
     @property
     def scene(self) -> CreatureScene:
@@ -144,16 +193,18 @@ class MobApp(App):
     def compose(self) -> ComposeResult:
         yield CreatureScene(self.animal, id="creature")
         with Container(id="hud"):
-            yield Label("", id="name-badge")
-            yield Label("", id="update-badge")
-            yield ListView(
-                ListItem(Label("Give pet a name"), id="cmd-rename"),
-                ListItem(Label("Feed"), id="cmd-feed"),
-                ListItem(Label("Pet"), id="cmd-pet"),
-                ListItem(Label(""), id="cmd-update"),
-                id="cmd-list",
-            )
-            yield Input(placeholder="name your pet…", id="name-input")
+            yield Label("", id="xp-badge")
+            with Container(id="hud-right"):
+                yield Label("", id="name-badge")
+                yield Label("", id="update-badge")
+                yield ListView(
+                    ListItem(Label("Give pet a name"), id="cmd-rename"),
+                    ListItem(Label("Feed"), id="cmd-feed"),
+                    ListItem(Label("Pet"), id="cmd-pet"),
+                    ListItem(Label(""), id="cmd-update"),
+                    id="cmd-list",
+                )
+                yield Input(placeholder="name your pet…", id="name-input")
 
     def on_mount(self) -> None:
         self.title = f"mob — {self.animal.name}"
@@ -162,7 +213,12 @@ class MobApp(App):
         if self._fg:
             self.screen.styles.color = self._fg
             self.scene.styles.color = self._fg
-            for selector in ("#name-badge", "#update-badge", "#cmd-list", "#name-input"):
+            for selector in (
+                "#name-badge",
+                "#update-badge",
+                "#cmd-list",
+                "#name-input",
+            ):
                 self.query_one(selector).styles.color = self._fg
             self.query_one("#cmd-list", ListView).styles.border = (
                 "round",
@@ -171,6 +227,10 @@ class MobApp(App):
             for label in self.query("#cmd-list Label").results(Label):
                 label.styles.color = self._fg
             self.query_one("#name-input", Input).styles.color = self._fg
+        xp_base = self._fg or "#cccccc"
+        self.query_one("#xp-badge", Label).styles.color = contrast_shift(
+            xp_base, self._bg
+        )
         self.set_interval(4.0, self._maybe_blink)
         if self.animal.behavior.secondary_idles:
             self.set_interval(6.0, self._maybe_secondary_idle)
@@ -179,12 +239,49 @@ class MobApp(App):
         self.query_one("#name-input", Input).display = False
         self.query_one("#cmd-update", ListItem).display = False
         self._refresh_hud()
+        self._refresh_xp_badge()
         self.run_worker(self._check_updates_worker, thread=True, exclusive=True)
+        if atuin_available():
+            self._atuin = AtuinPoller(on_event=self._on_atuin_event)
+            self._atuin.start()
 
     def _check_updates_worker(self) -> None:
         tag = check_for_update()
         if tag:
             self.call_from_thread(self._on_update_available, tag)
+
+    def _refresh_xp_badge(self) -> None:
+        badge = self.query_one("#xp-badge", Label)
+        badge.update(f"{format_xp(self._xp)} xp")
+
+    def _on_atuin_event(self, event: CommandEvent) -> None:
+        # Called from the poller thread — bounce to the UI thread.
+        if event.exit_code != 0:
+            return
+        try:
+            self.call_from_thread(self._award_xp, XP_PER_COMMAND)
+        except RuntimeError:
+            # App already shutting down; drop silently.
+            pass
+
+    def _award_xp(self, amount: int) -> None:
+        self._xp += amount
+        xp_store.save(self.animal.name, self._xp)
+        self._refresh_xp_badge()
+        self._show_toast(f"+{amount} xp")
+
+    def _show_toast(self, text: str) -> None:
+        self.scene.toast_text = text
+        self.scene.toast_frame = 0
+        self._toast_tick()
+
+    def _toast_tick(self) -> None:
+        if self.scene.toast_frame >= CreatureScene.TOAST_TOTAL:
+            self.scene.toast_frame = -1
+            self.scene.toast_text = ""
+            return
+        self.scene.toast_frame += 1
+        self.set_timer(0.28, self._toast_tick)
 
     def _on_update_available(self, tag: str) -> None:
         self._update_tag = tag
@@ -510,6 +607,10 @@ class MobApp(App):
         self.set_focus(None)
 
     # ------------------------------------------------------------------
+
+    def on_unmount(self) -> None:
+        if self._atuin is not None:
+            self._atuin.stop()
 
     def on_resize(self) -> None:
         max_x = max(0, self.size.width - self.animal.width)

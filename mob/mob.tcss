@@ -22,12 +22,28 @@ CreatureScene {
     width: 100%;
     height: auto;
     background: transparent;
-    align: right top;
+    layout: horizontal;
     padding: 0 1;
 }
 
-#hud > * {
+#xp-badge {
     width: auto;
+    height: 1;
+    background: transparent;
+    padding: 0;
+}
+
+#hud-right {
+    width: 1fr;
+    height: auto;
+    background: transparent;
+    align: right top;
+}
+
+#hud-right > Label {
+    width: auto;
+    height: 1;
+    text-align: right;
     background: transparent;
 }
 
