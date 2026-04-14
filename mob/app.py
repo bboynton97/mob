@@ -135,6 +135,7 @@ class MobApp(App):
         self._hops_left_in_burst = 0
         self._pet_name: str | None = _load_pet_name(animal.name)
         self._update_tag: str | None = None
+        self._pending_update_tag: str | None = None
 
     @property
     def scene(self) -> CreatureScene:
@@ -149,6 +150,7 @@ class MobApp(App):
                 ListItem(Label("Give pet a name"), id="cmd-rename"),
                 ListItem(Label("Feed"), id="cmd-feed"),
                 ListItem(Label("Pet"), id="cmd-pet"),
+                ListItem(Label(""), id="cmd-update"),
                 id="cmd-list",
             )
             yield Input(placeholder="name your pet…", id="name-input")
@@ -175,6 +177,7 @@ class MobApp(App):
         self._schedule_next_burst()
         self.query_one("#cmd-list", ListView).display = False
         self.query_one("#name-input", Input).display = False
+        self.query_one("#cmd-update", ListItem).display = False
         self._refresh_hud()
         self.run_worker(self._check_updates_worker, thread=True, exclusive=True)
 
@@ -185,6 +188,11 @@ class MobApp(App):
 
     def _on_update_available(self, tag: str) -> None:
         self._update_tag = tag
+        item = self.query_one("#cmd-update", ListItem)
+        item.query_one(Label).update(f"Update mob → {tag}")
+        item.display = True
+        if self._fg:
+            item.query_one(Label).styles.color = self._fg
         self._refresh_hud()
 
     def _art_height(self) -> int:
@@ -487,6 +495,9 @@ class MobApp(App):
         elif event.item.id == "cmd-pet":
             self.action_close_commands()
             self.action_pet()
+        elif event.item.id == "cmd-update":
+            self._pending_update_tag = self._update_tag
+            self.exit()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "name-input":
@@ -527,7 +538,10 @@ def main() -> None:
     args = parser.parse_args()
 
     fg, bg = detect_terminal_colors()
-    MobApp(animal=ANIMALS[args.animal], fg=fg, bg=bg).run()
+    app = MobApp(animal=ANIMALS[args.animal], fg=fg, bg=bg)
+    app.run()
+    if app._pending_update_tag:
+        sys.exit(run_update(app._pending_update_tag))
 
 
 if __name__ == "__main__":

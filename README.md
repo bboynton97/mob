@@ -2,7 +2,7 @@
 
 Tiny creatures who live at the bottom of your terminal.
 
-<!-- GIF: hero shot of a frog hopping across the terminal -->
+![mob — the cat, named "tater"](docs/mob.gif)
 
 ## Install
 
