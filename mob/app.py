@@ -266,9 +266,12 @@ class MobApp(App):
         self.query_one("#xp-badge", Label).styles.color = contrast_shift(
             xp_base, self._bg
         )
-        self.set_interval(4.0, self._maybe_blink)
+        self.set_interval(8.0, self._maybe_blink)
         if self.animal.behavior.secondary_idles:
-            self.set_interval(6.0, self._maybe_secondary_idle)
+            self.set_interval(14.0, self._maybe_secondary_idle)
+        self.set_interval(60.0, self._maybe_sleep)
+        if "sleeping2" in self.animal.poses:
+            self.set_interval(1.2, self._breathe_sleep)
         self._schedule_next_burst()
         self.query_one("#cmd-list", ListView).display = False
         self.query_one("#name-input", Input).display = False
@@ -332,10 +335,17 @@ class MobApp(App):
         if event.exit_code != 0 or not self._xp_enabled:
             return
         try:
-            self.call_from_thread(self._award_xp, XP_PER_COMMAND)
+            self.call_from_thread(self._handle_command_event)
         except RuntimeError:
             # App already shutting down; drop silently.
             pass
+
+    def _handle_command_event(self) -> None:
+        self._award_xp(XP_PER_COMMAND)
+        if self._asleep and random.random() < 0.05:
+            self._asleep = False
+            if not self._busy_pose and not self._hopping:
+                self.scene.pose = "idle"
 
     def _award_xp(self, amount: int) -> None:
         self._xp += amount
@@ -385,16 +395,16 @@ class MobApp(App):
     def _schedule_next_burst(self) -> None:
         tier = random.choices(
             ["short", "medium", "long", "very_long"],
-            weights=[2, 3, 4, 2],
+            weights=[1, 3, 4, 3],
         )[0]
         if tier == "short":
-            delay = random.uniform(8, 18)
+            delay = random.uniform(15, 30)
         elif tier == "medium":
-            delay = random.uniform(18, 40)
+            delay = random.uniform(30, 70)
         elif tier == "long":
-            delay = random.uniform(40, 90)
+            delay = random.uniform(70, 150)
         else:
-            delay = random.uniform(90, 180)
+            delay = random.uniform(150, 300)
         self.set_timer(delay, self._begin_burst)
 
     def _begin_burst(self) -> None:
@@ -427,6 +437,33 @@ class MobApp(App):
             return
         self.scene.pose = "blink"
         self.set_timer(0.18, lambda: setattr(self.scene, "pose", "idle"))
+
+    def _maybe_sleep(self) -> None:
+        if self._asleep or self._hopping or self._busy_pose:
+            return
+        if self.scene.pose not in ("idle", "idle2"):
+            return
+        if random.random() > 0.15:
+            return
+        self._asleep = True
+        self.scene.pose = "sleeping"
+        if self._atuin is None:
+            self.set_timer(random.uniform(30.0, 60.0), self._auto_wake)
+
+    def _breathe_sleep(self) -> None:
+        if not self._asleep or self._busy_pose or self._hopping:
+            return
+        if self.scene.pose == "sleeping":
+            self.scene.pose = "sleeping2"
+        elif self.scene.pose == "sleeping2":
+            self.scene.pose = "sleeping"
+
+    def _auto_wake(self) -> None:
+        if not self._asleep or self._atuin is not None:
+            return
+        self._asleep = False
+        if not self._busy_pose and not self._hopping:
+            self.scene.pose = "idle"
 
     def _maybe_secondary_idle(self) -> None:
         if self._asleep or self._hopping or self._busy_pose:
@@ -529,6 +566,17 @@ class MobApp(App):
 
         if self.scene.x != target_x:
             self.scene.x += step_x
+
+        # Alternate between the two walk frames for a little animation.
+        current = self.scene.pose
+        if current in ("walk_left", "walk_left2"):
+            alt = "walk_left2" if current == "walk_left" else "walk_left"
+            if alt in self.animal.poses:
+                self.scene.pose = alt
+        elif current in ("walk_right", "walk_right2"):
+            alt = "walk_right2" if current == "walk_right" else "walk_right"
+            if alt in self.animal.poses:
+                self.scene.pose = alt
 
         # Move y probabilistically, weighted by how much vertical distance
         # remains relative to horizontal — keeps the path roughly diagonal.
