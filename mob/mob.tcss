@@ -88,3 +88,30 @@ CreatureScene {
     border: none;
     padding: 0 1;
 }
+
+ConfirmScreen {
+    align: center middle;
+}
+
+#confirm-dialog {
+    width: 54;
+    height: auto;
+    padding: 1 2;
+    border: round white;
+    background: $panel;
+}
+
+#confirm-text {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+#confirm-buttons {
+    width: 100%;
+    height: auto;
+    align-horizontal: center;
+}
+
+#confirm-buttons > Button {
+    margin: 0 1;
+}

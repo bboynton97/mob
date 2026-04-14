@@ -6,16 +6,18 @@ import argparse
 import json
 import os
 import random
+import subprocess
 import sys
 from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
+from textual.containers import Container, Horizontal
 from textual.reactive import reactive
-from textual.widgets import Input, Label, ListItem, ListView, Static
+from textual.screen import ModalScreen
+from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
-from mob import xp as xp_store
+from mob import settings, xp as xp_store
 from mob.art import ANIMALS, Animal
 from mob.atuin import AtuinPoller, CommandEvent, is_available as atuin_available
 from mob.term_colors import detect_terminal_colors
@@ -98,8 +100,7 @@ class CreatureScene(Static):
     y_lift: reactive[int] = reactive(0)
     pose: reactive[str] = reactive("idle")
     heart_frame: reactive[int] = reactive(-1)  # -1 = hearts hidden
-    toast_frame: reactive[int] = reactive(-1)  # -1 = toast hidden
-    toast_text: reactive[str] = reactive("")
+    toasts: reactive[tuple[tuple[str, int], ...]] = reactive(())
 
     HEART_TOTAL = 16
     TOAST_TOTAL = 10
@@ -138,15 +139,45 @@ class CreatureScene(Static):
                 # blank in the base render — safe to overwrite.
                 lines[row_y] = overlay
 
-        if self.toast_frame >= 0 and self.toast_text:
-            toast_y = self.y - self.y_lift - 1 - self.toast_frame
+        for text, frame in self.toasts:
+            if not text:
+                continue
+            toast_y = self.y - self.y_lift - 1 - frame
             toast_x = self.x + 1
-            if toast_y >= 0 and toast_x >= 0:
-                while len(lines) <= toast_y:
-                    lines.append("")
-                padding = " " * toast_x
-                lines[toast_y] = padding + f"[bold]{self.toast_text}[/]"
+            if toast_y < 0 or toast_x < 0:
+                continue
+            while len(lines) <= toast_y:
+                lines.append("")
+            padding = " " * toast_x
+            lines[toast_y] = padding + f"[bold]{text}[/]"
         return "\n".join(lines)
+
+
+class ConfirmScreen(ModalScreen[bool]):
+    """Minimal yes/no modal. Returns True if yes, False otherwise."""
+
+    BINDINGS = [
+        Binding("y", "choose(True)", show=False),
+        Binding("n", "choose(False)", show=False),
+        Binding("escape", "choose(False)", show=False),
+    ]
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Container(id="confirm-dialog"):
+            yield Label(self._message, id="confirm-text")
+            with Horizontal(id="confirm-buttons"):
+                yield Button("Yes (y)", id="confirm-yes", variant="primary")
+                yield Button("No (n)", id="confirm-no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "confirm-yes")
+
+    def action_choose(self, value: bool) -> None:
+        self.dismiss(value)
 
 
 class MobApp(App):
@@ -185,6 +216,9 @@ class MobApp(App):
         self._pending_update_tag: str | None = None
         self._xp: int = xp_store.load(animal.name)
         self._atuin: AtuinPoller | None = None
+        self._xp_enabled: bool = bool(settings.get("xp_enabled", True))
+        self._toast_running: bool = False
+        self._pending_atuin_install: bool = False
 
     @property
     def scene(self) -> CreatureScene:
@@ -201,6 +235,7 @@ class MobApp(App):
                     ListItem(Label("Give pet a name"), id="cmd-rename"),
                     ListItem(Label("Feed"), id="cmd-feed"),
                     ListItem(Label("Pet"), id="cmd-pet"),
+                    ListItem(Label(""), id="cmd-xp-toggle"),
                     ListItem(Label(""), id="cmd-update"),
                     id="cmd-list",
                 )
@@ -240,10 +275,47 @@ class MobApp(App):
         self.query_one("#cmd-update", ListItem).display = False
         self._refresh_hud()
         self._refresh_xp_badge()
+        self._refresh_xp_toggle_label()
         self.run_worker(self._check_updates_worker, thread=True, exclusive=True)
-        if atuin_available():
-            self._atuin = AtuinPoller(on_event=self._on_atuin_event)
-            self._atuin.start()
+        self._start_atuin_if_enabled()
+
+    def _start_atuin_if_enabled(self) -> None:
+        if not self._xp_enabled:
+            return
+        if self._atuin is not None:
+            return
+        if not atuin_available():
+            return
+        self._atuin = AtuinPoller(on_event=self._on_atuin_event)
+        self._atuin.start()
+
+    def _stop_atuin(self) -> None:
+        if self._atuin is not None:
+            self._atuin.stop()
+            self._atuin = None
+
+    def _apply_xp_toggle(self, enabled: bool) -> None:
+        self._xp_enabled = enabled
+        settings.set("xp_enabled", enabled)
+        if enabled:
+            self._start_atuin_if_enabled()
+        else:
+            self._stop_atuin()
+        self._refresh_xp_toggle_label()
+        self._refresh_xp_badge()
+
+    def _after_atuin_confirm(self, install: bool) -> None:
+        if not install:
+            return
+        self._pending_atuin_install = True
+        self.exit()
+
+    def _refresh_xp_toggle_label(self) -> None:
+        item = self.query_one("#cmd-xp-toggle", ListItem)
+        label = item.query_one(Label)
+        label.update("Disable xp tracking" if self._xp_enabled else "Enable xp tracking")
+        if self._fg:
+            label.styles.color = self._fg
 
     def _check_updates_worker(self) -> None:
         tag = check_for_update()
@@ -253,10 +325,11 @@ class MobApp(App):
     def _refresh_xp_badge(self) -> None:
         badge = self.query_one("#xp-badge", Label)
         badge.update(f"{format_xp(self._xp)} xp")
+        badge.display = self._xp_enabled
 
     def _on_atuin_event(self, event: CommandEvent) -> None:
         # Called from the poller thread — bounce to the UI thread.
-        if event.exit_code != 0:
+        if event.exit_code != 0 or not self._xp_enabled:
             return
         try:
             self.call_from_thread(self._award_xp, XP_PER_COMMAND)
@@ -271,17 +344,25 @@ class MobApp(App):
         self._show_toast(f"+{amount} xp")
 
     def _show_toast(self, text: str) -> None:
-        self.scene.toast_text = text
-        self.scene.toast_frame = 0
-        self._toast_tick()
+        existing = list(self.scene.toasts)
+        # If another toast is still at frame 0 (arrived within a tick of this one),
+        # bump it by one so they don't render on top of each other.
+        existing = [(t, max(f, 1)) if f == 0 else (t, f) for t, f in existing]
+        existing.append((text, 0))
+        self.scene.toasts = tuple(existing)
+        if not self._toast_running:
+            self._toast_running = True
+            self.set_timer(0.28, self._toast_tick)
 
     def _toast_tick(self) -> None:
-        if self.scene.toast_frame >= CreatureScene.TOAST_TOTAL:
-            self.scene.toast_frame = -1
-            self.scene.toast_text = ""
-            return
-        self.scene.toast_frame += 1
-        self.set_timer(0.28, self._toast_tick)
+        advanced = [
+            (t, f + 1) for t, f in self.scene.toasts if f + 1 < CreatureScene.TOAST_TOTAL
+        ]
+        self.scene.toasts = tuple(advanced)
+        if advanced:
+            self.set_timer(0.28, self._toast_tick)
+        else:
+            self._toast_running = False
 
     def _on_update_available(self, tag: str) -> None:
         self._update_tag = tag
@@ -592,6 +673,18 @@ class MobApp(App):
         elif event.item.id == "cmd-pet":
             self.action_close_commands()
             self.action_pet()
+        elif event.item.id == "cmd-xp-toggle":
+            self.action_close_commands()
+            if not self._xp_enabled and not atuin_available():
+                self.push_screen(
+                    ConfirmScreen(
+                        "xp tracking needs atuin, which isn't installed.\n"
+                        "Install it now from https://atuin.sh?"
+                    ),
+                    self._after_atuin_confirm,
+                )
+                return
+            self._apply_xp_toggle(not self._xp_enabled)
         elif event.item.id == "cmd-update":
             self._pending_update_tag = self._update_tag
             self.exit()
@@ -643,6 +736,29 @@ def main() -> None:
     app.run()
     if app._pending_update_tag:
         sys.exit(run_update(app._pending_update_tag))
+    if app._pending_atuin_install:
+        rc = _install_atuin()
+        if rc == 0:
+            # Pre-enable xp tracking so the relaunched session picks it up.
+            settings.set("xp_enabled", True)
+            print("→ Relaunching mob…")
+            os.execvp(sys.argv[0], sys.argv)
+        sys.exit(rc)
+
+
+def _install_atuin() -> int:
+    """Run the official atuin installer from setup.atuin.sh."""
+    print("→ Installing atuin from https://setup.atuin.sh")
+    installer = "curl --proto '=https' --tlsv1.2 -LsSf https://setup.atuin.sh | sh"
+    rc = subprocess.call(installer, shell=True)
+    if rc == 0:
+        print()
+        print("✓ atuin installed.")
+        print("  If you want sync across machines, run: atuin register")
+        print("  To import existing shell history:      atuin import auto")
+    else:
+        print("✖ atuin installer exited with code", rc, file=sys.stderr)
+    return rc
 
 
 if __name__ == "__main__":
