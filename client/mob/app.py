@@ -15,9 +15,10 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal
 from textual.reactive import reactive
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
-from mob import settings, xp as xp_store
+from mob import leaderboard, settings, xp as xp_store
 from mob.art import ANIMALS, Animal
 from mob.atuin import AtuinPoller, CommandEvent, is_available as atuin_available
 from mob.term_colors import detect_terminal_colors
@@ -219,6 +220,11 @@ class MobApp(App):
         self._xp_enabled: bool = bool(settings.get("xp_enabled", True))
         self._toast_running: bool = False
         self._pending_atuin_install: bool = False
+        self._leaderboard_cfg: leaderboard.Config | None = leaderboard.load_config()
+        self._join_stage: str | None = None
+        self._join_gh_user: str = ""
+        self._join_matched_fp: str = ""
+        self._submit_timer: Timer | None = None
 
     @property
     def scene(self) -> CreatureScene:
@@ -236,6 +242,7 @@ class MobApp(App):
                     ListItem(Label("Feed"), id="cmd-feed"),
                     ListItem(Label("Pet"), id="cmd-pet"),
                     ListItem(Label(""), id="cmd-xp-toggle"),
+                    ListItem(Label(""), id="cmd-leaderboard-join"),
                     ListItem(Label(""), id="cmd-update"),
                     id="cmd-list",
                 )
@@ -279,8 +286,11 @@ class MobApp(App):
         self._refresh_hud()
         self._refresh_xp_badge()
         self._refresh_xp_toggle_label()
+        self._refresh_leaderboard_menu()
         self.run_worker(self._check_updates_worker, thread=True, exclusive=True)
         self._start_atuin_if_enabled()
+        if self._leaderboard_cfg and self._leaderboard_cfg.enabled:
+            self.run_worker(self._submit_xp_worker, thread=True, exclusive=False)
 
     def _start_atuin_if_enabled(self) -> None:
         if not self._xp_enabled:
@@ -352,6 +362,7 @@ class MobApp(App):
         xp_store.save(self.animal.name, self._xp)
         self._refresh_xp_badge()
         self._show_toast(f"+{amount} xp")
+        self._schedule_submit()
 
     def _show_toast(self, text: str) -> None:
         existing = list(self.scene.toasts)
@@ -710,6 +721,7 @@ class MobApp(App):
         if event.item.id == "cmd-rename":
             self.query_one("#cmd-list", ListView).display = False
             name_input = self.query_one("#name-input", Input)
+            name_input.placeholder = "name your pet…"
             name_input.value = ""
             name_input.display = True
             self._refresh_hud()
@@ -732,6 +744,15 @@ class MobApp(App):
                 )
                 return
             self._apply_xp_toggle(not self._xp_enabled)
+        elif event.item.id == "cmd-leaderboard-join":
+            self.action_close_commands()
+            if self._leaderboard_cfg:
+                self.push_screen(
+                    ConfirmScreen("Stop syncing XP to the leaderboard?"),
+                    self._after_leave_confirm,
+                )
+            else:
+                self._start_join_flow()
         elif event.item.id == "cmd-update":
             self._pending_update_tag = self._update_tag
             self.exit()
@@ -739,18 +760,125 @@ class MobApp(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "name-input":
             return
-        name = event.value.strip()
-        self._pet_name = name or None
-        _save_pet_name(self.animal.name, self._pet_name)
+        value = event.value.strip()
         event.input.display = False
         self._refresh_hud()
         self.set_focus(None)
+        stage = self._join_stage
+        if stage == "gh_user":
+            if not value:
+                self._join_stage = None
+                return
+            self._show_toast("checking github…")
+            gh_user = value
+            self.run_worker(
+                lambda: self._verify_gh_user_worker(gh_user),
+                thread=True,
+                exclusive=True,
+            )
+            return
+        if stage == "display_name":
+            self._join_stage = None
+            if not value:
+                return
+            self._complete_join(value)
+            return
+        self._pet_name = value or None
+        _save_pet_name(self.animal.name, self._pet_name)
+
+    # ------------------------------------------------------------------
+    # leaderboard
+
+    def _refresh_leaderboard_menu(self) -> None:
+        item = self.query_one("#cmd-leaderboard-join", ListItem)
+        label = item.query_one(Label)
+        label.update(
+            "Leave leaderboard" if self._leaderboard_cfg else "Join leaderboard"
+        )
+        if self._fg:
+            label.styles.color = self._fg
+
+    def _start_join_flow(self) -> None:
+        self._join_stage = "gh_user"
+        self.query_one("#cmd-list", ListView).display = False
+        name_input = self.query_one("#name-input", Input)
+        name_input.placeholder = "github username…"
+        name_input.value = ""
+        name_input.display = True
+        self._refresh_hud()
+        name_input.focus()
+
+    def _ask_display_name(self) -> None:
+        self._join_stage = "display_name"
+        name_input = self.query_one("#name-input", Input)
+        name_input.placeholder = "display name…"
+        name_input.value = ""
+        name_input.display = True
+        self._refresh_hud()
+        name_input.focus()
+
+    def _verify_gh_user_worker(self, gh_user: str) -> None:
+        fp = leaderboard.find_matching_fp(gh_user)
+        try:
+            self.call_from_thread(self._on_gh_verify_result, gh_user, fp)
+        except RuntimeError:
+            pass
+
+    def _on_gh_verify_result(self, gh_user: str, fp: str | None) -> None:
+        if fp is None:
+            self._show_toast("no matching ssh key on github")
+            self._join_stage = None
+            return
+        self._join_gh_user = gh_user
+        self._join_matched_fp = fp
+        self._ask_display_name()
+
+    def _complete_join(self, display_name: str) -> None:
+        cfg = leaderboard.Config(
+            github_user=self._join_gh_user,
+            display_name=display_name,
+            machine_fp=self._join_matched_fp,
+        )
+        leaderboard.save_config(cfg)
+        self._leaderboard_cfg = cfg
+        self._refresh_leaderboard_menu()
+        self._show_toast("joined the leaderboard")
+        self.run_worker(self._submit_xp_worker, thread=True, exclusive=False)
+
+    def _after_leave_confirm(self, confirmed: bool) -> None:
+        if not confirmed:
+            return
+        leaderboard.delete_config()
+        self._leaderboard_cfg = None
+        self._refresh_leaderboard_menu()
+        self._show_toast("left the leaderboard")
+
+    def _submit_xp_worker(self) -> None:
+        cfg = self._leaderboard_cfg
+        if cfg is None or not cfg.enabled:
+            return
+        leaderboard.submit(cfg, self.animal.name, self._pet_name, self._xp)
+
+    def _schedule_submit(self) -> None:
+        cfg = self._leaderboard_cfg
+        if cfg is None or not cfg.enabled:
+            return
+        if self._submit_timer is not None:
+            self._submit_timer.stop()
+        self._submit_timer = self.set_timer(60.0, self._flush_submit)
+
+    def _flush_submit(self) -> None:
+        self._submit_timer = None
+        self.run_worker(self._submit_xp_worker, thread=True, exclusive=False)
 
     # ------------------------------------------------------------------
 
     def on_unmount(self) -> None:
         if self._atuin is not None:
             self._atuin.stop()
+        if self._submit_timer is not None:
+            self._submit_timer.stop()
+            self._submit_timer = None
 
     def on_resize(self) -> None:
         max_x = max(0, self.size.width - self.animal.width)
