@@ -29,7 +29,7 @@ if [ -z "${TAG}" ]; then
     exit 1
 fi
 
-SOURCE="git+https://github.com/${REPO}@${TAG}"
+SOURCE="git+https://github.com/${REPO}@${TAG}#subdirectory=client"
 echo "→ Installing mob ${TAG}"
 
 if command -v uv >/dev/null 2>&1; then
