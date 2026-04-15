@@ -11,6 +11,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -77,7 +78,7 @@ class AtuinPoller:
 
     def _poll_once(self) -> None:
         uri = f"file:{self._db_path}?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=1.0) as conn:
+        with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as conn:
             rows = conn.execute(
                 """
                 SELECT id, timestamp, command, exit, duration
