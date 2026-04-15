@@ -86,7 +86,7 @@ def run_update(tag: str | None = None) -> int:
     if not tag:
         print("Could not resolve latest release tag.", file=sys.stderr)
         return 1
-    source = f"git+https://github.com/{REPO}@{tag}"
+    source = f"git+https://github.com/{REPO}@{tag}#subdirectory=client"
     for installer, cmd in (
         ("uv", ["uv", "tool", "install", "--force", source]),
         ("pipx", ["pipx", "install", "--force", source]),
