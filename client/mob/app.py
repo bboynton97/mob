@@ -181,6 +181,66 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(value)
 
 
+class LeaderboardScreen(ModalScreen[None]):
+    """Shows top 5 for a pet species plus the caller's row."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss", show=False),
+        Binding("q", "dismiss", show=False),
+    ]
+
+    def __init__(self, cfg: leaderboard.Config, pet: str) -> None:
+        super().__init__()
+        self._cfg = cfg
+        self._pet = pet
+
+    def compose(self) -> ComposeResult:
+        with Container(id="leaderboard-dialog"):
+            yield Label(f"leaderboard · {self._pet}", id="leaderboard-title")
+            yield Static("loading…", id="leaderboard-body")
+            yield Label("esc to close", id="leaderboard-footer")
+
+    def on_mount(self) -> None:
+        self.run_worker(self._fetch_worker, thread=True, exclusive=True)
+
+    def _fetch_worker(self) -> None:
+        view = leaderboard.fetch_leaderboard(self._cfg, self._pet)
+        try:
+            self.app.call_from_thread(self._apply_view, view)
+        except RuntimeError:
+            pass
+
+    def _apply_view(self, view: leaderboard.LeaderboardView | None) -> None:
+        body = self.query_one("#leaderboard-body", Static)
+        if view is None:
+            body.update("couldn't reach the leaderboard")
+            return
+        if not view.top and view.me is None:
+            body.update("no entries yet — be the first!")
+            return
+        lines: list[str] = []
+        in_top = view.me is not None and any(
+            r.rank == view.me.rank and r.display_name == view.me.display_name
+            for r in view.top
+        )
+        for row in view.top:
+            lines.append(self._fmt_row(row, highlight=row.is_me))
+        if view.me is not None and not in_top:
+            lines.append("[dim]…[/dim]")
+            lines.append(self._fmt_row(view.me, highlight=True))
+        body.update("\n".join(lines))
+
+    @staticmethod
+    def _fmt_row(row: leaderboard.LeaderboardRow, highlight: bool) -> str:
+        xp = format_xp(row.xp)
+        label = f"{row.rank}. {row.display_name}'s {row.pet}"
+        padded = f"{label:<28}{xp:>6} xp"
+        return f"[bold]{padded}[/bold]" if highlight else padded
+
+    def action_dismiss(self) -> None:
+        self.dismiss()
+
+
 class MobApp(App):
     CSS_PATH = "mob.tcss"
 
@@ -225,6 +285,9 @@ class MobApp(App):
         self._join_gh_user: str = ""
         self._join_matched_fp: str = ""
         self._submit_timer: Timer | None = None
+        self._sync: leaderboard.SyncClient | None = None
+        self._other_machines: dict[str, int] = {}
+        self._others_http_total: int = 0
 
     @property
     def scene(self) -> CreatureScene:
@@ -243,6 +306,7 @@ class MobApp(App):
                     ListItem(Label("Pet"), id="cmd-pet"),
                     ListItem(Label(""), id="cmd-xp-toggle"),
                     ListItem(Label(""), id="cmd-leaderboard-join"),
+                    ListItem(Label("Leaderboard"), id="cmd-leaderboard-show"),
                     ListItem(Label(""), id="cmd-update"),
                     id="cmd-list",
                 )
@@ -283,6 +347,7 @@ class MobApp(App):
         self.query_one("#cmd-list", ListView).display = False
         self.query_one("#name-input", Input).display = False
         self.query_one("#cmd-update", ListItem).display = False
+        self.query_one("#cmd-leaderboard-show", ListItem).display = False
         self._refresh_hud()
         self._refresh_xp_badge()
         self._refresh_xp_toggle_label()
@@ -291,6 +356,7 @@ class MobApp(App):
         self._start_atuin_if_enabled()
         if self._leaderboard_cfg and self._leaderboard_cfg.enabled:
             self.run_worker(self._submit_xp_worker, thread=True, exclusive=False)
+            self._start_sync()
 
     def _start_atuin_if_enabled(self) -> None:
         if not self._xp_enabled:
@@ -337,8 +403,16 @@ class MobApp(App):
 
     def _refresh_xp_badge(self) -> None:
         badge = self.query_one("#xp-badge", Label)
-        badge.update(f"{format_xp(self._xp)} xp")
+        badge.update(f"{format_xp(self._total_xp())} xp")
         badge.display = self._xp_enabled
+
+    def _total_xp(self) -> int:
+        others = (
+            sum(self._other_machines.values())
+            if self._other_machines
+            else self._others_http_total
+        )
+        return self._xp + others
 
     def _on_atuin_event(self, event: CommandEvent) -> None:
         # Called from the poller thread — bounce to the UI thread.
@@ -362,7 +436,10 @@ class MobApp(App):
         xp_store.save(self.animal.name, self._xp)
         self._refresh_xp_badge()
         self._show_toast(f"+{amount} xp")
-        self._schedule_submit()
+        if self._sync is not None and self._sync.connected:
+            self._sync.push_local_xp(self._xp)
+        else:
+            self._schedule_submit()
 
     def _show_toast(self, text: str) -> None:
         existing = list(self.scene.toasts)
@@ -744,6 +821,11 @@ class MobApp(App):
                 )
                 return
             self._apply_xp_toggle(not self._xp_enabled)
+        elif event.item.id == "cmd-leaderboard-show":
+            self.action_close_commands()
+            cfg = self._leaderboard_cfg
+            if cfg is not None:
+                self.push_screen(LeaderboardScreen(cfg, self.animal.name))
         elif event.item.id == "cmd-leaderboard-join":
             self.action_close_commands()
             if self._leaderboard_cfg:
@@ -795,8 +877,11 @@ class MobApp(App):
         label.update(
             "Leave leaderboard" if self._leaderboard_cfg else "Join leaderboard"
         )
+        show_item = self.query_one("#cmd-leaderboard-show", ListItem)
+        show_item.display = self._leaderboard_cfg is not None
         if self._fg:
             label.styles.color = self._fg
+            show_item.query_one(Label).styles.color = self._fg
 
     def _start_join_flow(self) -> None:
         self._join_stage = "gh_user"
@@ -844,20 +929,36 @@ class MobApp(App):
         self._refresh_leaderboard_menu()
         self._show_toast("joined the leaderboard")
         self.run_worker(self._submit_xp_worker, thread=True, exclusive=False)
+        self._start_sync()
 
     def _after_leave_confirm(self, confirmed: bool) -> None:
         if not confirmed:
             return
         leaderboard.delete_config()
         self._leaderboard_cfg = None
+        self._stop_sync()
+        self._other_machines = {}
+        self._others_http_total = 0
         self._refresh_leaderboard_menu()
+        self._refresh_xp_badge()
         self._show_toast("left the leaderboard")
 
     def _submit_xp_worker(self) -> None:
         cfg = self._leaderboard_cfg
         if cfg is None or not cfg.enabled:
             return
-        leaderboard.submit(cfg, self.animal.name, self._pet_name, self._xp)
+        result = leaderboard.submit(
+            cfg, self.animal.name, self._pet_name, self._xp
+        )
+        if result is not None:
+            try:
+                self.call_from_thread(self._on_submit_result, result)
+            except RuntimeError:
+                pass
+
+    def _on_submit_result(self, result: leaderboard.SubmitResult) -> None:
+        self._others_http_total = max(0, result.others_xp)
+        self._refresh_xp_badge()
 
     def _schedule_submit(self) -> None:
         cfg = self._leaderboard_cfg
@@ -871,6 +972,49 @@ class MobApp(App):
         self._submit_timer = None
         self.run_worker(self._submit_xp_worker, thread=True, exclusive=False)
 
+    def _start_sync(self) -> None:
+        cfg = self._leaderboard_cfg
+        if cfg is None or not cfg.enabled or self._sync is not None:
+            return
+
+        def on_snapshot(contribs: dict[str, int]) -> None:
+            try:
+                self.call_from_thread(self._on_ws_snapshot, contribs)
+            except RuntimeError:
+                pass
+
+        def on_peer_update(fp: str, xp: int) -> None:
+            try:
+                self.call_from_thread(self._on_ws_peer_update, fp, xp)
+            except RuntimeError:
+                pass
+
+        self._sync = leaderboard.SyncClient(
+            cfg, self.animal.name, on_snapshot, on_peer_update
+        )
+        self._sync.start(initial_xp=self._xp)
+
+    def _stop_sync(self) -> None:
+        if self._sync is not None:
+            self._sync.stop()
+            self._sync = None
+
+    def _on_ws_snapshot(self, contribs: dict[str, int]) -> None:
+        my_fp = self._leaderboard_cfg.machine_fp if self._leaderboard_cfg else None
+        self._other_machines = {
+            fp: xp for fp, xp in contribs.items() if fp != my_fp
+        }
+        self._refresh_xp_badge()
+
+    def _on_ws_peer_update(self, fp: str, xp: int) -> None:
+        prev = self._other_machines.get(fp, 0)
+        if xp <= prev:
+            return
+        self._other_machines[fp] = xp
+        delta = xp - prev
+        self._refresh_xp_badge()
+        self._show_toast(f"+{delta} xp")
+
     # ------------------------------------------------------------------
 
     def on_unmount(self) -> None:
@@ -879,6 +1023,7 @@ class MobApp(App):
         if self._submit_timer is not None:
             self._submit_timer.stop()
             self._submit_timer = None
+        self._stop_sync()
 
     def on_resize(self) -> None:
         max_x = max(0, self.size.width - self.animal.width)

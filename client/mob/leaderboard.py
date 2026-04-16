@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
 import json
 import os
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Callable
 
 API_BASE = os.environ.get(
     "MOB_LEADERBOARD_URL",
@@ -231,3 +234,163 @@ def fetch_leaderboard(cfg: Config, pet: str) -> LeaderboardView | None:
     if me is not None:
         me.is_me = True
     return LeaderboardView(top=top, me=me)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket sync
+
+
+def _ws_url(cfg: Config, pet: str) -> str:
+    base = API_BASE.replace("https://", "wss://").replace("http://", "ws://")
+    qs = urllib.parse.urlencode({
+        "github_user": cfg.github_user,
+        "machine_fp": cfg.machine_fp,
+        "pet": pet,
+    })
+    return f"{base}/sync?{qs}"
+
+
+class SyncClient:
+    """Background thread that maintains a /sync WebSocket and surfaces
+    snapshot + peer_update events via callbacks.
+
+    Callbacks fire on the sync thread — caller is responsible for marshalling
+    onto the UI thread (e.g. Textual's call_from_thread).
+    """
+
+    def __init__(
+        self,
+        cfg: Config,
+        pet: str,
+        on_snapshot: Callable[[dict[str, int]], None],
+        on_peer_update: Callable[[str, int], None],
+    ) -> None:
+        self._cfg = cfg
+        self._pet = pet
+        self._on_snapshot = on_snapshot
+        self._on_peer_update = on_peer_update
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._ws = None
+        self._stop = False
+        self._local_xp = 0
+        self._connected = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def start(self, initial_xp: int) -> None:
+        self._local_xp = initial_xp
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop = True
+        loop = self._loop
+        if loop is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(self._shutdown(), loop)
+            except RuntimeError:
+                pass
+
+    def push_local_xp(self, xp: int) -> None:
+        self._local_xp = xp
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._send_update(xp), loop)
+        except RuntimeError:
+            pass
+
+    async def _shutdown(self) -> None:
+        ws = self._ws
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    async def _send_update(self, xp: int) -> None:
+        ws = self._ws
+        if ws is None:
+            return
+        try:
+            await ws.send(json.dumps({"type": "update", "xp": xp}))
+        except Exception:
+            pass
+
+    def _run(self) -> None:
+        try:
+            asyncio.run(self._main())
+        except Exception:
+            pass
+
+    async def _main(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        backoff = 1.0
+        while not self._stop:
+            try:
+                await self._connect_once()
+                backoff = 1.0
+            except Exception:
+                pass
+            self._connected = False
+            if self._stop:
+                break
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+
+    async def _connect_once(self) -> None:
+        # Imported here so the module imports cleanly even if `websockets`
+        # isn't installed yet (e.g. older client versions post-upgrade).
+        from websockets.asyncio.client import connect
+
+        url = _ws_url(self._cfg, self._pet)
+        async with connect(url, ping_interval=30, ping_timeout=10) as ws:
+            self._ws = ws
+            self._connected = True
+            await ws.send(json.dumps({"type": "update", "xp": self._local_xp}))
+            async for raw in ws:
+                self._handle(raw)
+        self._ws = None
+
+    def _handle(self, raw) -> None:
+        if isinstance(raw, bytes):
+            try:
+                raw = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return
+        try:
+            msg = json.loads(raw)
+        except ValueError:
+            return
+        if not isinstance(msg, dict):
+            return
+        t = msg.get("type")
+        if t == "snapshot":
+            contribs = msg.get("contributions") or {}
+            if isinstance(contribs, dict):
+                parsed: dict[str, int] = {}
+                for k, v in contribs.items():
+                    try:
+                        parsed[str(k)] = int(v)
+                    except (TypeError, ValueError):
+                        continue
+                try:
+                    self._on_snapshot(parsed)
+                except Exception:
+                    pass
+        elif t == "peer_update":
+            fp = msg.get("machine_fp")
+            xp = msg.get("xp")
+            if isinstance(fp, str):
+                try:
+                    xp_int = int(xp)
+                except (TypeError, ValueError):
+                    return
+                try:
+                    self._on_peer_update(fp, xp_int)
+                except Exception:
+                    pass

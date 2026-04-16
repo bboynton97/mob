@@ -36,3 +36,38 @@ async def _run_migrations(p: asyncpg.Pool) -> None:
     for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
         async with p.acquire() as conn:
             await conn.execute(path.read_text())
+
+
+async def upsert_contribution(
+    conn: asyncpg.Connection,
+    github_user: str,
+    pet: str,
+    machine_fp: str,
+    xp: int,
+) -> int:
+    """Upsert with GREATEST semantics; returns the post-upsert xp value."""
+    row = await conn.fetchrow(
+        """
+        INSERT INTO contributions (github_user, pet, machine_fp, xp)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (github_user, pet, machine_fp)
+        DO UPDATE SET xp = GREATEST(contributions.xp, EXCLUDED.xp),
+                      updated_at = now()
+        RETURNING xp
+        """,
+        github_user, pet, machine_fp, xp,
+    )
+    return int(row["xp"])
+
+
+async def fetch_contributions(
+    conn: asyncpg.Connection,
+    github_user: str,
+    pet: str,
+) -> dict[str, int]:
+    rows = await conn.fetch(
+        "SELECT machine_fp, xp FROM contributions "
+        "WHERE github_user=$1 AND pet=$2",
+        github_user, pet,
+    )
+    return {r["machine_fp"]: int(r["xp"]) for r in rows}

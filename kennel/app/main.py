@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 
-from app import db
+from app import db, ws as ws_hub
 from app.models import (
     LeaderboardResponse,
     LeaderboardRow,
@@ -28,19 +28,25 @@ async def health() -> dict:
     return {"ok": True}
 
 
+@app.websocket("/sync")
+async def sync(
+    ws: WebSocket,
+    github_user: str,
+    machine_fp: str,
+    pet: str,
+) -> None:
+    if not ws_hub.valid_params(github_user, machine_fp, pet):
+        await ws.close(code=1008)
+        return
+    await ws_hub.handle(ws, github_user, machine_fp, pet)
+
+
 @app.post("/submit", response_model=SubmitResponse)
 async def submit(req: SubmitRequest) -> SubmitResponse:
     async with db.pool().acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                """
-                INSERT INTO contributions (github_user, pet, machine_fp, xp)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (github_user, pet, machine_fp)
-                DO UPDATE SET xp = GREATEST(contributions.xp, EXCLUDED.xp),
-                              updated_at = now()
-                """,
-                req.github_user, req.pet, req.machine_fp, req.xp,
+            await db.upsert_contribution(
+                conn, req.github_user, req.pet, req.machine_fp, req.xp
             )
             await conn.execute(
                 """

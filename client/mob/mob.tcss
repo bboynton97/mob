@@ -115,3 +115,34 @@ ConfirmScreen {
 #confirm-buttons > Button {
     margin: 0 1;
 }
+
+LeaderboardScreen {
+    align: center middle;
+}
+
+#leaderboard-dialog {
+    width: 44;
+    height: auto;
+    padding: 1 2;
+    border: round white;
+    background: $panel;
+}
+
+#leaderboard-title {
+    width: 100%;
+    text-align: center;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+#leaderboard-body {
+    width: 100%;
+    height: auto;
+    margin-bottom: 1;
+}
+
+#leaderboard-footer {
+    width: 100%;
+    text-align: center;
+    text-style: dim;
+}
