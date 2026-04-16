@@ -1,0 +1,30 @@
+name: release version check
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  verify-pyproject-matches-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Compare pyproject version to release tag
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          expected="${tag#v}"
+          actual="$(grep -E '^version *= *"' client/pyproject.toml | head -1 | sed -E 's/^version *= *"([^"]+)".*/\1/')"
+          echo "release tag : $tag"
+          echo "pyproject   : $actual"
+          echo "expected    : $expected"
+          if [ -z "$actual" ]; then
+            echo "::error::Could not read version from client/pyproject.toml"
+            exit 1
+          fi
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::client/pyproject.toml version ($actual) does not match release tag ($tag)"
+            exit 1
+          fi
