@@ -9,7 +9,7 @@ GithubUser = Annotated[
     StringConstraints(
         min_length=1,
         max_length=39,
-        pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$",
+        pattern=r"^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$",
     ),
 ]
 MachineFp = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
