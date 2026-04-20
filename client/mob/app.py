@@ -288,6 +288,7 @@ class MobApp(App):
         self._sync: leaderboard.SyncClient | None = None
         self._other_machines: dict[str, int] = {}
         self._others_http_total: int = 0
+        self._menu_mode: str = "main"
 
     @property
     def scene(self) -> CreatureScene:
@@ -300,16 +301,7 @@ class MobApp(App):
             with Container(id="hud-right"):
                 yield Label("", id="name-badge")
                 yield Label("", id="update-badge")
-                yield ListView(
-                    ListItem(Label("Give pet a name"), id="cmd-rename"),
-                    ListItem(Label("Feed"), id="cmd-feed"),
-                    ListItem(Label("Pet"), id="cmd-pet"),
-                    ListItem(Label(""), id="cmd-xp-toggle"),
-                    ListItem(Label(""), id="cmd-leaderboard-join"),
-                    ListItem(Label("Leaderboard"), id="cmd-leaderboard-show"),
-                    ListItem(Label(""), id="cmd-update"),
-                    id="cmd-list",
-                )
+                yield ListView(id="cmd-list")
                 yield Input(placeholder="name your pet…", id="name-input")
 
     def on_mount(self) -> None:
@@ -330,8 +322,6 @@ class MobApp(App):
                 "round",
                 self._fg,
             )
-            for label in self.query("#cmd-list Label").results(Label):
-                label.styles.color = self._fg
             self.query_one("#name-input", Input).styles.color = self._fg
         xp_base = self._fg or "#cccccc"
         self.query_one("#xp-badge", Label).styles.color = contrast_shift(
@@ -346,12 +336,9 @@ class MobApp(App):
         self._schedule_next_burst()
         self.query_one("#cmd-list", ListView).display = False
         self.query_one("#name-input", Input).display = False
-        self.query_one("#cmd-update", ListItem).display = False
-        self.query_one("#cmd-leaderboard-show", ListItem).display = False
+        self._refresh_menu()
         self._refresh_hud()
         self._refresh_xp_badge()
-        self._refresh_xp_toggle_label()
-        self._refresh_leaderboard_menu()
         self.run_worker(self._check_updates_worker, thread=True, exclusive=True)
         self._start_atuin_if_enabled()
         if self._leaderboard_cfg and self._leaderboard_cfg.enabled:
@@ -380,7 +367,7 @@ class MobApp(App):
             self._start_atuin_if_enabled()
         else:
             self._stop_atuin()
-        self._refresh_xp_toggle_label()
+        self._refresh_menu()
         self._refresh_xp_badge()
 
     def _after_atuin_confirm(self, install: bool) -> None:
@@ -389,12 +376,46 @@ class MobApp(App):
         self._pending_atuin_install = True
         self.exit()
 
-    def _refresh_xp_toggle_label(self) -> None:
-        item = self.query_one("#cmd-xp-toggle", ListItem)
-        label = item.query_one(Label)
-        label.update("Disable xp tracking" if self._xp_enabled else "Enable xp tracking")
-        if self._fg:
-            label.styles.color = self._fg
+    def _menu_entries(self) -> list[tuple[str, str]]:
+        on_lb = self._leaderboard_cfg is not None
+        has_name = bool(self._pet_name)
+        if self._menu_mode == "main":
+            entries: list[tuple[str, str]] = []
+            if not has_name:
+                entries.append(("cmd-rename", "Give pet a name"))
+            entries.append(("cmd-feed", "Feed (f)"))
+            entries.append(("cmd-pet", "Pet (p)"))
+            if not self._xp_enabled:
+                entries.append(("cmd-xp-enable", "Enable xp tracking"))
+            if on_lb:
+                entries.append(("cmd-leaderboard-show", "Leaderboard"))
+            else:
+                entries.append(("cmd-leaderboard-join", "Join leaderboard"))
+            if self._xp_enabled or on_lb or has_name:
+                entries.append(("cmd-settings", "Settings"))
+            if self._update_tag:
+                entries.append(("cmd-update", f"Update mob → {self._update_tag}"))
+            return entries
+        entries = []
+        if has_name:
+            entries.append(("cmd-rename-change", "Change name"))
+        if self._xp_enabled:
+            entries.append(("cmd-xp-disable", "Disable xp tracking"))
+        if on_lb:
+            entries.append(("cmd-leaderboard-leave", "Leave leaderboard"))
+        entries.append(("cmd-settings-back", "Back"))
+        return entries
+
+    def _refresh_menu(self) -> None:
+        cmd_list = self.query_one("#cmd-list", ListView)
+        cmd_list.clear()
+        for item_id, text in self._menu_entries():
+            label = Label(text)
+            if self._fg:
+                label.styles.color = self._fg
+            item = ListItem(label)
+            item.menu_key = item_id
+            cmd_list.append(item)
 
     def _check_updates_worker(self) -> None:
         tag = check_for_update()
@@ -464,11 +485,7 @@ class MobApp(App):
 
     def _on_update_available(self, tag: str) -> None:
         self._update_tag = tag
-        item = self.query_one("#cmd-update", ListItem)
-        item.query_one(Label).update(f"Update mob → {tag}")
-        item.display = True
-        if self._fg:
-            item.query_one(Label).styles.color = self._fg
+        self._refresh_menu()
         self._refresh_hud()
 
     def _art_height(self) -> int:
@@ -777,25 +794,39 @@ class MobApp(App):
             update_badge.update(f"update {self._update_tag} · mob update")
         update_badge.display = bool(self._update_tag) and not hud_open
 
+    def _highlight_first_menu_item(self) -> None:
+        cmd_list = self.query_one("#cmd-list", ListView)
+        cmd_list.index = 0
+
     def action_open_commands(self) -> None:
+        self._menu_mode = "main"
+        self._refresh_menu()
         cmd_list = self.query_one("#cmd-list", ListView)
         name_input = self.query_one("#name-input", Input)
         name_input.display = False
         cmd_list.display = True
-        cmd_list.index = 0
         self._refresh_hud()
         cmd_list.focus()
+        self.call_after_refresh(self._highlight_first_menu_item)
 
     def action_close_commands(self) -> None:
-        self.query_one("#cmd-list", ListView).display = False
+        cmd_list = self.query_one("#cmd-list", ListView)
+        if cmd_list.display and self._menu_mode == "settings":
+            self._menu_mode = "main"
+            self._refresh_menu()
+            self.call_after_refresh(self._highlight_first_menu_item)
+            return
+        cmd_list.display = False
         self.query_one("#name-input", Input).display = False
+        self._menu_mode = "main"
         self._refresh_hud()
         self.set_focus(None)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.item is None:
             return
-        if event.item.id == "cmd-rename":
+        item_id = getattr(event.item, "menu_key", None)
+        if item_id in ("cmd-rename", "cmd-rename-change"):
             self.query_one("#cmd-list", ListView).display = False
             name_input = self.query_one("#name-input", Input)
             name_input.placeholder = "name your pet…"
@@ -803,15 +834,15 @@ class MobApp(App):
             name_input.display = True
             self._refresh_hud()
             name_input.focus()
-        elif event.item.id == "cmd-feed":
+        elif item_id == "cmd-feed":
             self.action_close_commands()
             self.action_feed()
-        elif event.item.id == "cmd-pet":
+        elif item_id == "cmd-pet":
             self.action_close_commands()
             self.action_pet()
-        elif event.item.id == "cmd-xp-toggle":
+        elif item_id == "cmd-xp-enable":
             self.action_close_commands()
-            if not self._xp_enabled and not atuin_available():
+            if not atuin_available():
                 self.push_screen(
                     ConfirmScreen(
                         "xp tracking needs atuin, which isn't installed.\n"
@@ -820,22 +851,33 @@ class MobApp(App):
                     self._after_atuin_confirm,
                 )
                 return
-            self._apply_xp_toggle(not self._xp_enabled)
-        elif event.item.id == "cmd-leaderboard-show":
+            self._apply_xp_toggle(True)
+        elif item_id == "cmd-xp-disable":
+            self.action_close_commands()
+            self._apply_xp_toggle(False)
+        elif item_id == "cmd-leaderboard-show":
             self.action_close_commands()
             cfg = self._leaderboard_cfg
             if cfg is not None:
                 self.push_screen(LeaderboardScreen(cfg, self.animal.name))
-        elif event.item.id == "cmd-leaderboard-join":
+        elif item_id == "cmd-leaderboard-join":
             self.action_close_commands()
-            if self._leaderboard_cfg:
-                self.push_screen(
-                    ConfirmScreen("Stop syncing XP to the leaderboard?"),
-                    self._after_leave_confirm,
-                )
-            else:
-                self._start_join_flow()
-        elif event.item.id == "cmd-update":
+            self._start_join_flow()
+        elif item_id == "cmd-leaderboard-leave":
+            self.action_close_commands()
+            self.push_screen(
+                ConfirmScreen("Stop syncing XP to the leaderboard?"),
+                self._after_leave_confirm,
+            )
+        elif item_id == "cmd-settings":
+            self._menu_mode = "settings"
+            self._refresh_menu()
+            self.call_after_refresh(self._highlight_first_menu_item)
+        elif item_id == "cmd-settings-back":
+            self._menu_mode = "main"
+            self._refresh_menu()
+            self.call_after_refresh(self._highlight_first_menu_item)
+        elif item_id == "cmd-update":
             self._pending_update_tag = self._update_tag
             self.exit()
 
@@ -870,18 +912,6 @@ class MobApp(App):
 
     # ------------------------------------------------------------------
     # leaderboard
-
-    def _refresh_leaderboard_menu(self) -> None:
-        item = self.query_one("#cmd-leaderboard-join", ListItem)
-        label = item.query_one(Label)
-        label.update(
-            "Leave leaderboard" if self._leaderboard_cfg else "Join leaderboard"
-        )
-        show_item = self.query_one("#cmd-leaderboard-show", ListItem)
-        show_item.display = self._leaderboard_cfg is not None
-        if self._fg:
-            label.styles.color = self._fg
-            show_item.query_one(Label).styles.color = self._fg
 
     def _start_join_flow(self) -> None:
         self._join_stage = "gh_user"
@@ -926,7 +956,7 @@ class MobApp(App):
         )
         leaderboard.save_config(cfg)
         self._leaderboard_cfg = cfg
-        self._refresh_leaderboard_menu()
+        self._refresh_menu()
         self._show_toast("joined the leaderboard")
         self.run_worker(self._submit_xp_worker, thread=True, exclusive=False)
         self._start_sync()
@@ -939,7 +969,7 @@ class MobApp(App):
         self._stop_sync()
         self._other_machines = {}
         self._others_http_total = 0
-        self._refresh_leaderboard_menu()
+        self._refresh_menu()
         self._refresh_xp_badge()
         self._show_toast("left the leaderboard")
 

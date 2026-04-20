@@ -48,7 +48,4 @@ cat <<'EOF'
 ✓ Done. Try one of:
     mob frog
     mob cat
-    mob dog
-    mob turtle
-    mob slime
 EOF

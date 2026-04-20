@@ -89,6 +89,11 @@ CreatureScene {
     padding: 0 1;
 }
 
+#name-input > .input--placeholder {
+    color: $text 70%;
+    text-style: none;
+}
+
 ConfirmScreen {
     align: center middle;
 }
