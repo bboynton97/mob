@@ -2,7 +2,7 @@
 
 Tiny creatures who live at the bottom of your terminal.
 
-![mob — the cat, named "tater"](docs/mob.gif)
+![mob — the cat, named "tater"](docs/walk.gif)
 
 Only the animal appears by default — everything below (naming, XP, updates) is opt-in via the `/` menu.
 
@@ -53,7 +53,7 @@ XP tracking reads your shell history via [atuin](https://atuin.sh).
 
 Already have atuin set up? Skip step 2 — toggling on is all you need.
 
-<!-- GIF: running a command in another pane, +2 xp toast floating above the pet -->
+![xp syncing via atuin](docs/xp.gif)
 
 ## Name your pet
 
@@ -64,3 +64,5 @@ Open `/` → "Give pet a name". The name persists across sessions.
 ## Update
 
 When a new version is out, an "Update mob → vX.Y.Z" entry shows up in `/`. Pick it and mob reinstalls itself.
+
+![sleeping pet](docs/sleep.gif)
