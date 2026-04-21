@@ -23,6 +23,17 @@ API_BASE = os.environ.get(
 HTTP_TIMEOUT = 5.0
 
 
+def _debug_log(msg: str) -> None:
+    try:
+        base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+        path = base / "mob" / "leaderboard.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            f.write(msg + "\n")
+    except OSError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # config
 
@@ -334,8 +345,8 @@ class SyncClient:
             try:
                 await self._connect_once()
                 backoff = 1.0
-            except Exception:
-                pass
+            except Exception as e:
+                _debug_log(f"sync error: {type(e).__name__}: {e}")
             self._connected = False
             if self._stop:
                 break
