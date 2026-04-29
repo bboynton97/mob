@@ -101,10 +101,13 @@ class CreatureScene(Static):
     y_lift: reactive[int] = reactive(0)
     pose: reactive[str] = reactive("idle")
     heart_frame: reactive[int] = reactive(-1)  # -1 = hearts hidden
+    nyan_frame: reactive[int] = reactive(-1)   # -1 = nyan hidden
     toasts: reactive[tuple[tuple[str, int], ...]] = reactive(())
 
     HEART_TOTAL = 16
     TOAST_TOTAL = 10
+    NYAN_TOTAL = 40
+    NYAN_COLORS = ("#ff0000", "#ff8800", "#ffff00", "#33ff33", "#0099ff", "#ff33ff")
     # (dx from mob's left edge, dy above mob's top line)
     HEART_OFFSETS = ((2, 1), (6, 2), (4, 3))
 
@@ -118,6 +121,16 @@ class CreatureScene(Static):
         shifted = [pad + line for line in art]
         top_count = max(0, self.y - self.y_lift)
         lines = [""] * top_count + shifted
+
+        if self.nyan_frame >= 0:
+            for i in range(len(art)):
+                row = top_count + i
+                if row >= len(lines):
+                    continue
+                stripe = self.NYAN_COLORS[i % len(self.NYAN_COLORS)]
+                mob_c = self.NYAN_COLORS[(self.nyan_frame + i) % len(self.NYAN_COLORS)]
+                trail = f"[{stripe}]{'━' * self.x}[/]" if self.x > 0 else ""
+                lines[row] = trail + f"[bold {mob_c}]{art[i]}[/]"
 
         if self.heart_frame >= 0:
             rows: dict[int, list[int]] = {}
@@ -289,6 +302,9 @@ class MobApp(App):
         self._other_machines: dict[str, int] = {}
         self._others_http_total: int = 0
         self._menu_mode: str = "main"
+        self._nyan_playing: bool = False
+        self._nyan_orig_x: int = 0
+        self._nyan_orig_y: int = 0
 
     @property
     def scene(self) -> CreatureScene:
@@ -457,6 +473,8 @@ class MobApp(App):
         xp_store.save(self.animal.name, self._xp)
         self._refresh_xp_badge()
         self._show_toast(f"+{amount} xp")
+        if random.random() < 0.001 and not self._nyan_playing:
+            self._play_nyan()
         if self._sync is not None and self._sync.connected:
             self._sync.push_local_xp(self._xp)
         else:
@@ -778,6 +796,48 @@ class MobApp(App):
     def action_sleep(self) -> None:
         self._asleep = not self._asleep
         self.scene.pose = "sleeping" if self._asleep else "idle"
+
+    # ------------------------------------------------------------------
+    # nyan
+
+    def _play_nyan(self) -> None:
+        if self._nyan_playing:
+            return
+        self._nyan_playing = True
+        self._nyan_orig_x = self.scene.x
+        self._nyan_orig_y = self.scene.y
+        self._busy_pose = True
+        self.scene.x = 0
+        self.scene.nyan_frame = 0
+        if "walk_right" in self.animal.poses:
+            self.scene.pose = "walk_right"
+        elif "hop" in self.animal.poses:
+            self.scene.pose = "hop"
+        self._nyan_tick()
+
+    def _nyan_tick(self) -> None:
+        frame = self.scene.nyan_frame
+        if frame >= CreatureScene.NYAN_TOTAL:
+            self._nyan_end()
+            return
+        max_x = max(1, self.size.width - self.animal.width)
+        self.scene.x = min(max_x, round(max_x * frame / CreatureScene.NYAN_TOTAL))
+        if "walk_right" in self.animal.poses:
+            if (frame // 3) % 2 == 0:
+                alt = "walk_right"
+            else:
+                alt = "walk_right2" if "walk_right2" in self.animal.poses else "walk_right"
+            self.scene.pose = alt
+        self.scene.nyan_frame = frame + 1
+        self.set_timer(0.05, self._nyan_tick)
+
+    def _nyan_end(self) -> None:
+        self.scene.nyan_frame = -1
+        self._nyan_playing = False
+        self._busy_pose = False
+        self._hopping = False
+        self.scene.pose = "sleeping" if self._asleep else "idle"
+        self._award_xp(100)
 
     # ------------------------------------------------------------------
     # HUD / command palette
