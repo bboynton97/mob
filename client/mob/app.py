@@ -473,7 +473,7 @@ class MobApp(App):
         xp_store.save(self.animal.name, self._xp)
         self._refresh_xp_badge()
         self._show_toast(f"+{amount} xp")
-        if random.random() < 0.001 and not self._nyan_playing:
+        if random.random() < 0.005 and not self._nyan_playing:
             self._play_nyan()
         if self._sync is not None and self._sync.connected:
             self._sync.push_local_xp(self._xp)
