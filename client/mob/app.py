@@ -282,8 +282,10 @@ class MobApp(App):
         animal: Animal,
         fg: str | None = None,
         bg: str | None = None,
+        dev: bool = False,
     ) -> None:
         super().__init__()
+        self._dev = dev
         self.animal = animal
         self._fg = fg
         self._bg = bg
@@ -331,6 +333,10 @@ class MobApp(App):
                 yield Input(placeholder="name your pet…", id="name-input")
 
     def on_mount(self) -> None:
+        if self._dev:
+            self.bind("s", "dev_sleep", show=False)
+            self.bind("r", "dev_nyan", show=False)
+            self.bind("m", "dev_move", show=False)
         self.title = f"mob — {self.animal.name}"
         if self._bg:
             self.screen.styles.background = self._bg
@@ -839,6 +845,19 @@ class MobApp(App):
             self._start_random_hop()
 
     # ------------------------------------------------------------------
+    # dev-only actions
+
+    def action_dev_sleep(self) -> None:
+        self._asleep = not self._asleep
+        self.scene.pose = "sleeping" if self._asleep else "idle"
+
+    def action_dev_nyan(self) -> None:
+        self._play_nyan()
+
+    def action_dev_move(self) -> None:
+        self.action_toy()
+
+    # ------------------------------------------------------------------
     # nyan
 
     def _play_nyan(self) -> None:
@@ -1180,10 +1199,11 @@ def main() -> None:
         choices=sorted(ANIMALS),
         help="which critter to summon (default: frog)",
     )
+    parser.add_argument("--dev", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     fg, bg = detect_terminal_colors()
-    app = MobApp(animal=ANIMALS[args.animal], fg=fg, bg=bg)
+    app = MobApp(animal=ANIMALS[args.animal], fg=fg, bg=bg, dev=args.dev)
     app.run()
     if app._pending_update_tag:
         sys.exit(run_update(app._pending_update_tag))
