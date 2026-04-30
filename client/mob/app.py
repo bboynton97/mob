@@ -19,6 +19,8 @@ from textual.timer import Timer
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
 from mob import gems as gems_store, leaderboard, settings, xp as xp_store
+from mob.decorations import CATALOG as DECO_CATALOG, load_equipped, load_purchased
+from mob import decorations as deco_store
 from mob.art import ANIMALS, Animal
 from mob.atuin import AtuinPoller, CommandEvent, is_available as atuin_available
 from mob.term_colors import detect_terminal_colors
@@ -109,6 +111,7 @@ class CreatureScene(Static):
     pose: reactive[str] = reactive("idle")
     heart_frame: reactive[int] = reactive(-1)  # -1 = hearts hidden
     nyan_frame: reactive[int] = reactive(-1)   # -1 = nyan hidden
+    equipped: reactive[tuple[str, ...]] = reactive(())
     toasts: reactive[tuple[tuple[str, int], ...]] = reactive(())
 
     HEART_TOTAL = 16
@@ -123,11 +126,27 @@ class CreatureScene(Static):
         self.animal = animal
 
     def render(self) -> str:
+        term_h = self.size.height if self.size.height > 0 else 24
+        lines = [""] * term_h
+
+        for deco_id in self.equipped:
+            deco = DECO_CATALOG.get(deco_id)
+            if deco is None:
+                continue
+            deco_art = deco.art.strip("\n").split("\n")
+            deco_top = term_h - len(deco_art) - deco.y_offset
+            for i, deco_line in enumerate(deco_art):
+                row = deco_top + i
+                if 0 <= row < term_h:
+                    lines[row] = " " * deco.x_offset + deco_line
+
         art = self.animal.poses[self.pose].strip("\n").split("\n")
         pad = " " * max(0, self.x)
-        shifted = [pad + line for line in art]
         top_count = max(0, self.y - self.y_lift)
-        lines = [""] * top_count + shifted
+        for i, art_line in enumerate(art):
+            row = top_count + i
+            if 0 <= row < term_h:
+                lines[row] = pad + art_line
 
         if self.nyan_frame >= 0:
             for i in range(len(art)):
@@ -261,6 +280,48 @@ class LeaderboardScreen(ModalScreen[None]):
         self.dismiss()
 
 
+class ShopScreen(ModalScreen[str | None]):
+    """Browse and purchase decorations."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss", show=False),
+        Binding("q", "dismiss", show=False),
+    ]
+
+    def __init__(self, gems: float, purchased: list[str]) -> None:
+        super().__init__()
+        self._gems = gems
+        self._purchased = set(purchased)
+
+    def compose(self) -> ComposeResult:
+        with Container(id="shop-dialog"):
+            yield Label("shop", id="shop-title")
+            yield Label(f"{format_gems(self._gems)} available", id="shop-gems")
+            yield ListView(id="shop-list")
+            yield Label("esc to close", id="shop-footer")
+
+    def on_mount(self) -> None:
+        shop_list = self.query_one("#shop-list", ListView)
+        for deco in DECO_CATALOG.values():
+            if deco.id in self._purchased:
+                text = f"  {deco.name} (owned)"
+            else:
+                text = f"  {deco.name} · {deco.cost} gems"
+            item = ListItem(Label(text))
+            item.menu_key = deco.id
+            shop_list.append(item)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.item is None:
+            return
+        deco_id = getattr(event.item, "menu_key", None)
+        if deco_id and deco_id not in self._purchased:
+            self.dismiss(deco_id)
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
+
+
 class MobApp(App):
     CSS_PATH = "mob.tcss"
 
@@ -299,6 +360,8 @@ class MobApp(App):
         self._xp: int = xp_store.load(animal.name)
         self._gems: float = gems_store.load()
         self._fed_recently: bool = False
+        self._purchased_decos: list[str] = load_purchased()
+        self._equipped_decos: list[str] = load_equipped()
         self._atuin: AtuinPoller | None = None
         self._xp_enabled: bool = bool(settings.get("xp_enabled", True))
         self._toast_running: bool = False
@@ -363,6 +426,7 @@ class MobApp(App):
         self.query_one("#gem-badge", Label).styles.color = contrast_shift(
             gem_base, self._bg, amount=0.25
         )
+        self.scene.equipped = tuple(self._equipped_decos)
         self.set_interval(8.0, self._maybe_blink)
         if self.animal.behavior.secondary_idles:
             self.set_interval(14.0, self._maybe_secondary_idle)
@@ -422,6 +486,7 @@ class MobApp(App):
                 entries.append(("cmd-rename", "Give pet a name"))
             entries.append(("cmd-feed", "Feed · 5 gems (f)"))
             entries.append(("cmd-pet", "Pet (p)"))
+            entries.append(("cmd-shop", "Shop"))
             if not self._xp_enabled:
                 entries.append(("cmd-xp-enable", "Enable xp tracking"))
             if on_lb:
@@ -960,6 +1025,12 @@ class MobApp(App):
         elif item_id == "cmd-pet":
             self.action_close_commands()
             self.action_pet()
+        elif item_id == "cmd-shop":
+            self.action_close_commands()
+            self.push_screen(
+                ShopScreen(self._gems, self._purchased_decos),
+                self._on_shop_result,
+            )
         elif item_id == "cmd-xp-enable":
             self.action_close_commands()
             if not atuin_available():
@@ -1092,6 +1163,22 @@ class MobApp(App):
         self._refresh_menu()
         self._refresh_xp_badge()
         self._show_toast("left the leaderboard")
+
+    def _on_shop_result(self, deco_id: str | None) -> None:
+        if deco_id is None:
+            return
+        deco = DECO_CATALOG.get(deco_id)
+        if deco is None:
+            return
+        if self._gems < deco.cost:
+            self._show_toast("not enough gems")
+            return
+        self._award_gems(-deco.cost)
+        deco_store.save_purchase(deco_id)
+        self._purchased_decos = load_purchased()
+        self._equipped_decos = load_equipped()
+        self.scene.equipped = tuple(self._equipped_decos)
+        self._show_toast(f"bought {deco.name}!")
 
     def _submit_xp_worker(self) -> None:
         cfg = self._leaderboard_cfg

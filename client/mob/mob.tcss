@@ -165,3 +165,51 @@ LeaderboardScreen {
     text-align: center;
     text-style: dim;
 }
+
+ShopScreen {
+    align: center middle;
+}
+
+#shop-dialog {
+    width: 36;
+    height: auto;
+    padding: 1 2;
+    border: round white;
+    background: $panel;
+}
+
+#shop-title {
+    width: 100%;
+    text-align: center;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+#shop-gems {
+    width: 100%;
+    text-align: center;
+    text-style: dim;
+    margin-bottom: 1;
+}
+
+#shop-list {
+    width: 100%;
+    height: auto;
+    max-height: 8;
+    background: transparent;
+}
+
+#shop-list > ListItem {
+    background: transparent;
+}
+
+#shop-list > ListItem.--highlight {
+    background: transparent;
+    text-style: reverse;
+}
+
+#shop-footer {
+    width: 100%;
+    text-align: center;
+    text-style: dim;
+}
