@@ -141,12 +141,15 @@ class CreatureScene(Static):
                     lines[row] = " " * deco.x_offset + deco_line
 
         art = self.animal.poses[self.pose].strip("\n").split("\n")
-        pad = " " * max(0, self.x)
         top_count = max(0, self.y - self.y_lift)
         for i, art_line in enumerate(art):
             row = top_count + i
             if 0 <= row < term_h:
-                lines[row] = pad + art_line
+                base = lines[row]
+                end = self.x + len(art_line)
+                if len(base) < end:
+                    base = base.ljust(end)
+                lines[row] = base[:self.x] + art_line + base[end:]
 
         if self.nyan_frame >= 0:
             for i in range(len(art)):
@@ -288,10 +291,17 @@ class ShopScreen(ModalScreen[str | None]):
         Binding("q", "dismiss", show=False),
     ]
 
-    def __init__(self, gems: float, purchased: list[str], dev: bool = False) -> None:
+    def __init__(
+        self,
+        gems: float,
+        purchased: list[str],
+        equipped: list[str],
+        dev: bool = False,
+    ) -> None:
         super().__init__()
         self._gems = gems
         self._purchased = set(purchased)
+        self._equipped = set(equipped)
         self._dev = dev
 
     def compose(self) -> ComposeResult:
@@ -306,7 +316,10 @@ class ShopScreen(ModalScreen[str | None]):
         shop_list = self.query_one("#shop-list", ListView)
         for deco in DECO_CATALOG.values():
             if deco.id in self._purchased:
-                text = f"  {deco.name} (owned)"
+                if deco.id in self._equipped:
+                    text = f"  {deco.name} ✓"
+                else:
+                    text = f"  {deco.name} (hidden)"
             elif self._dev:
                 text = f"  {deco.name} · free"
             else:
@@ -319,7 +332,7 @@ class ShopScreen(ModalScreen[str | None]):
         if event.item is None:
             return
         deco_id = getattr(event.item, "menu_key", None)
-        if deco_id and deco_id not in self._purchased:
+        if deco_id:
             self.dismiss(deco_id)
 
     def action_dismiss(self) -> None:
@@ -1032,7 +1045,10 @@ class MobApp(App):
         elif item_id == "cmd-shop":
             self.action_close_commands()
             self.push_screen(
-                ShopScreen(self._gems, self._purchased_decos, dev=self._dev),
+                ShopScreen(
+                    self._gems, self._purchased_decos,
+                    self._equipped_decos, dev=self._dev,
+                ),
                 self._on_shop_result,
             )
         elif item_id == "cmd-xp-enable":
@@ -1174,12 +1190,26 @@ class MobApp(App):
         deco = DECO_CATALOG.get(deco_id)
         if deco is None:
             return
-        if self._dev:
+        already_owned = deco_id in self._purchased_decos
+        if self._dev and not already_owned:
             if deco_id not in self._equipped_decos:
                 self._equipped_decos.append(deco_id)
             self._purchased_decos = list(self._equipped_decos)
             self.scene.equipped = tuple(self._equipped_decos)
             self._show_toast(f"previewing {deco.name}")
+            return
+        if already_owned:
+            if self._dev:
+                if deco_id in self._equipped_decos:
+                    self._equipped_decos.remove(deco_id)
+                else:
+                    self._equipped_decos.append(deco_id)
+            else:
+                deco_store.toggle_equip(deco_id)
+                self._equipped_decos = load_equipped()
+            self.scene.equipped = tuple(self._equipped_decos)
+            visible = deco_id in self._equipped_decos
+            self._show_toast(f"{deco.name} {'shown' if visible else 'hidden'}")
             return
         if self._gems < deco.cost:
             self._show_toast("not enough gems")

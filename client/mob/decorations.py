@@ -115,3 +115,23 @@ def save_purchase(decoration_id: str) -> None:
         path.write_text(json.dumps(data, indent=2))
     except OSError:
         pass
+
+
+def toggle_equip(decoration_id: str) -> bool:
+    """Toggle equip state. Returns new equipped state."""
+    path = _path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = _load_all()
+        equipped = data.get("equipped", [])
+        if decoration_id in equipped:
+            equipped.remove(decoration_id)
+            now_equipped = False
+        else:
+            equipped.append(decoration_id)
+            now_equipped = True
+        data["equipped"] = equipped
+        path.write_text(json.dumps(data, indent=2))
+        return now_equipped
+    except OSError:
+        return False
