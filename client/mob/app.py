@@ -132,6 +132,22 @@ class CreatureScene(Static):
         term_h = self.size.height if self.size.height > 0 else 24
         lines = [""] * term_h
 
+        def _place(x: int, top: int, art_lines: list[str]) -> None:
+            for i, line in enumerate(art_lines):
+                row = top + i
+                if 0 <= row < term_h:
+                    base = lines[row]
+                    end = x + len(line)
+                    if len(base) < end:
+                        base = base.ljust(end)
+                    lines[row] = base[:x] + line + base[end:]
+
+        art = self.animal.poses[self.pose].strip("\n").split("\n")
+        top_count = max(0, self.y - self.y_lift)
+        mob_base = top_count + len(art) - 1
+
+        behind: list[tuple[int, int, list[str]]] = []
+        infront: list[tuple[int, int, list[str]]] = []
         for deco_id in self.equipped:
             deco = DECO_CATALOG.get(deco_id)
             if deco is None:
@@ -139,21 +155,17 @@ class CreatureScene(Static):
             deco_x = self.deco_positions.get(deco_id, deco.x_offset)
             deco_art = deco.art.strip("\n").split("\n")
             deco_top = term_h - len(deco_art) - deco.y_offset
-            for i, deco_line in enumerate(deco_art):
-                row = deco_top + i
-                if 0 <= row < term_h:
-                    lines[row] = " " * deco_x + deco_line
+            deco_base = deco_top + len(deco_art) - 1
+            if deco_base > mob_base:
+                infront.append((deco_x, deco_top, deco_art))
+            else:
+                behind.append((deco_x, deco_top, deco_art))
 
-        art = self.animal.poses[self.pose].strip("\n").split("\n")
-        top_count = max(0, self.y - self.y_lift)
-        for i, art_line in enumerate(art):
-            row = top_count + i
-            if 0 <= row < term_h:
-                base = lines[row]
-                end = self.x + len(art_line)
-                if len(base) < end:
-                    base = base.ljust(end)
-                lines[row] = base[:self.x] + art_line + base[end:]
+        for dx, dt, da in behind:
+            _place(dx, dt, da)
+        _place(self.x, top_count, art)
+        for dx, dt, da in infront:
+            _place(dx, dt, da)
 
         if self.nyan_frame >= 0:
             for i in range(len(art)):
