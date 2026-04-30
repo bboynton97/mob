@@ -26,7 +26,21 @@ CreatureScene {
     padding: 0 1;
 }
 
+#badges {
+    width: auto;
+    height: auto;
+    background: transparent;
+    padding: 0;
+}
+
 #xp-badge {
+    width: auto;
+    height: 1;
+    background: transparent;
+    padding: 0;
+}
+
+#gem-badge {
     width: auto;
     height: 1;
     background: transparent;

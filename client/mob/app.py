@@ -18,7 +18,7 @@ from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
-from mob import leaderboard, settings, xp as xp_store
+from mob import gems as gems_store, leaderboard, settings, xp as xp_store
 from mob.art import ANIMALS, Animal
 from mob.atuin import AtuinPoller, CommandEvent, is_available as atuin_available
 from mob.term_colors import detect_terminal_colors
@@ -56,6 +56,13 @@ def format_xp(xp: int) -> str:
             value = xp / threshold
             return f"{value:.1f}{suffix}" if value < 10 else f"{int(value)}{suffix}"
     return str(xp)
+
+
+def format_gems(gems: float) -> str:
+    if gems == int(gems):
+        return f"{int(gems)} gems"
+    return f"{gems:.1f} gems"
+
 
 HOP_ROOM = 3
 
@@ -264,7 +271,6 @@ class MobApp(App):
         Binding("f", "feed", show=False),
         Binding("p", "pet", show=False),
         Binding("t", "toy", show=False),
-        Binding("s", "sleep", show=False),
         Binding("slash", "open_commands", show=False),
         Binding("escape", "close_commands", show=False),
         Binding("q", "quit", show=False),
@@ -289,6 +295,8 @@ class MobApp(App):
         self._update_tag: str | None = None
         self._pending_update_tag: str | None = None
         self._xp: int = xp_store.load(animal.name)
+        self._gems: float = gems_store.load()
+        self._fed_recently: bool = False
         self._atuin: AtuinPoller | None = None
         self._xp_enabled: bool = bool(settings.get("xp_enabled", True))
         self._toast_running: bool = False
@@ -313,7 +321,9 @@ class MobApp(App):
     def compose(self) -> ComposeResult:
         yield CreatureScene(self.animal, id="creature")
         with Container(id="hud"):
-            yield Label("", id="xp-badge")
+            with Container(id="badges"):
+                yield Label("", id="xp-badge")
+                yield Label("", id="gem-badge")
             with Container(id="hud-right"):
                 yield Label("", id="name-badge")
                 yield Label("", id="update-badge")
@@ -343,6 +353,10 @@ class MobApp(App):
         self.query_one("#xp-badge", Label).styles.color = contrast_shift(
             xp_base, self._bg
         )
+        gem_base = self._fg or "#cccccc"
+        self.query_one("#gem-badge", Label).styles.color = contrast_shift(
+            gem_base, self._bg, amount=0.25
+        )
         self.set_interval(8.0, self._maybe_blink)
         if self.animal.behavior.secondary_idles:
             self.set_interval(14.0, self._maybe_secondary_idle)
@@ -355,6 +369,7 @@ class MobApp(App):
         self._refresh_menu()
         self._refresh_hud()
         self._refresh_xp_badge()
+        self._refresh_gem_badge()
         self.run_worker(self._check_updates_worker, thread=True, exclusive=True)
         self._start_atuin_if_enabled()
         if self._leaderboard_cfg and self._leaderboard_cfg.enabled:
@@ -399,7 +414,7 @@ class MobApp(App):
             entries: list[tuple[str, str]] = []
             if not has_name:
                 entries.append(("cmd-rename", "Give pet a name"))
-            entries.append(("cmd-feed", "Feed (f)"))
+            entries.append(("cmd-feed", "Feed · 5 gems (f)"))
             entries.append(("cmd-pet", "Pet (p)"))
             if not self._xp_enabled:
                 entries.append(("cmd-xp-enable", "Enable xp tracking"))
@@ -443,6 +458,10 @@ class MobApp(App):
         badge.update(f"{format_xp(self._total_xp())} xp")
         badge.display = self._xp_enabled
 
+    def _refresh_gem_badge(self) -> None:
+        badge = self.query_one("#gem-badge", Label)
+        badge.update(format_gems(self._gems))
+
     def _total_xp(self) -> int:
         others = (
             sum(self._other_machines.values())
@@ -463,6 +482,7 @@ class MobApp(App):
 
     def _handle_command_event(self) -> None:
         self._award_xp(XP_PER_COMMAND)
+        self._award_gems(round(random.uniform(0.1, 0.3), 1))
         if self._asleep and random.random() < 0.05:
             self._asleep = False
             if not self._busy_pose and not self._hopping:
@@ -479,6 +499,11 @@ class MobApp(App):
             self._sync.push_local_xp(self._xp)
         else:
             self._schedule_submit()
+
+    def _award_gems(self, amount: float) -> None:
+        self._gems = round(self._gems + amount, 1)
+        gems_store.save(self._gems)
+        self._refresh_gem_badge()
 
     def _show_toast(self, text: str) -> None:
         existing = list(self.scene.toasts)
@@ -749,16 +774,36 @@ class MobApp(App):
     def action_feed(self) -> None:
         if self._asleep or self._hopping or self._busy_pose:
             return
+        if self._fed_recently:
+            name = self._pet_name or self.animal.name
+            self._show_toast(f"{name} is not hungry")
+            return
+        if self._gems < 5:
+            self._show_toast("need 5 gems to feed")
+            return
+        self._award_gems(-5)
+        msg = "-5 gems"
+        if random.random() < 0.02:
+            msg += ". inflation, amirite?"
+        self._show_toast(msg)
+        self._fed_recently = True
+        self.set_timer(60.0, self._clear_feed_cooldown)
         self._busy_pose = True
-        self._chew_ticks_left = 6  # 6 * 0.28s ≈ 1.7s total
+        self._chew_ticks_left = 6
         self.scene.pose = "eating"
         self.set_timer(0.28, self._chew_tick)
+
+    def _clear_feed_cooldown(self) -> None:
+        self._fed_recently = False
 
     def _chew_tick(self) -> None:
         if self._chew_ticks_left <= 0:
             self._busy_pose = False
             self.scene.pose = "sleeping" if self._asleep else "idle"
             self._play_hearts()
+            reward = random.randint(2, 10)
+            self._award_gems(reward)
+            self._show_toast(f"+{reward} gems")
             return
         self._chew_ticks_left -= 1
         current = self.scene.pose
@@ -792,10 +837,6 @@ class MobApp(App):
             self._start_random_crawl()
         else:
             self._start_random_hop()
-
-    def action_sleep(self) -> None:
-        self._asleep = not self._asleep
-        self.scene.pose = "sleeping" if self._asleep else "idle"
 
     # ------------------------------------------------------------------
     # nyan
