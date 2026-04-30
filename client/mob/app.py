@@ -288,14 +288,16 @@ class ShopScreen(ModalScreen[str | None]):
         Binding("q", "dismiss", show=False),
     ]
 
-    def __init__(self, gems: float, purchased: list[str]) -> None:
+    def __init__(self, gems: float, purchased: list[str], dev: bool = False) -> None:
         super().__init__()
         self._gems = gems
         self._purchased = set(purchased)
+        self._dev = dev
 
     def compose(self) -> ComposeResult:
         with Container(id="shop-dialog"):
-            yield Label("shop", id="shop-title")
+            title = "shop (dev)" if self._dev else "shop"
+            yield Label(title, id="shop-title")
             yield Label(f"{format_gems(self._gems)} available", id="shop-gems")
             yield ListView(id="shop-list")
             yield Label("esc to close", id="shop-footer")
@@ -305,6 +307,8 @@ class ShopScreen(ModalScreen[str | None]):
         for deco in DECO_CATALOG.values():
             if deco.id in self._purchased:
                 text = f"  {deco.name} (owned)"
+            elif self._dev:
+                text = f"  {deco.name} · free"
             else:
                 text = f"  {deco.name} · {deco.cost} gems"
             item = ListItem(Label(text))
@@ -1028,7 +1032,7 @@ class MobApp(App):
         elif item_id == "cmd-shop":
             self.action_close_commands()
             self.push_screen(
-                ShopScreen(self._gems, self._purchased_decos),
+                ShopScreen(self._gems, self._purchased_decos, dev=self._dev),
                 self._on_shop_result,
             )
         elif item_id == "cmd-xp-enable":
@@ -1169,6 +1173,13 @@ class MobApp(App):
             return
         deco = DECO_CATALOG.get(deco_id)
         if deco is None:
+            return
+        if self._dev:
+            if deco_id not in self._equipped_decos:
+                self._equipped_decos.append(deco_id)
+            self._purchased_decos = list(self._equipped_decos)
+            self.scene.equipped = tuple(self._equipped_decos)
+            self._show_toast(f"previewing {deco.name}")
             return
         if self._gems < deco.cost:
             self._show_toast("not enough gems")
