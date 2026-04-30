@@ -126,7 +126,8 @@ class CreatureScene(Static):
     def __init__(self, animal: Animal, **kwargs) -> None:
         super().__init__(**kwargs)
         self.animal = animal
-        self.deco_positions: dict[str, int] = {}
+        self.deco_positions: dict[str, tuple[int, int]] = {}
+        self._place_blink_visible: bool = True
 
     def render(self) -> str:
         term_h = self.size.height if self.size.height > 0 else 24
@@ -152,9 +153,11 @@ class CreatureScene(Static):
             deco = DECO_CATALOG.get(deco_id)
             if deco is None:
                 continue
-            deco_x = self.deco_positions.get(deco_id, deco.x_offset)
+            pos = self.deco_positions.get(deco_id)
+            deco_x = pos[0] if pos else deco.x_offset
+            deco_y = pos[1] if pos else deco.y_offset
             deco_art = deco.art.strip("\n").split("\n")
-            deco_top = term_h - len(deco_art) - deco.y_offset
+            deco_top = term_h - len(deco_art) - deco_y
             deco_base = deco_top + len(deco_art) - 1
             if deco_base > mob_base:
                 infront.append((deco_x, deco_top, deco_art))
@@ -395,9 +398,10 @@ class MobApp(App):
         self._fed_recently: bool = False
         self._purchased_decos: list[str] = load_purchased()
         self._equipped_decos: list[str] = load_equipped()
-        self._deco_positions: dict[str, int] = load_positions()
+        self._deco_positions: dict[str, tuple[int, int]] = load_positions()
         self._placing_deco: str | None = None
         self._placing_x: int = 0
+        self._placing_y: int = 0
         self._atuin: AtuinPoller | None = None
         self._xp_enabled: bool = bool(settings.get("xp_enabled", True))
         self._toast_running: bool = False
@@ -462,7 +466,7 @@ class MobApp(App):
         self.query_one("#gem-badge", Label).styles.color = contrast_shift(
             gem_base, self._bg, amount=0.25
         )
-        self.scene.deco_positions = dict(self._deco_positions)
+        self.scene.deco_positions = {k: v for k, v in self._deco_positions.items()}
         self.scene.equipped = tuple(self._equipped_decos)
         self.set_interval(8.0, self._maybe_blink)
         if self.animal.behavior.secondary_idles:
@@ -1009,26 +1013,43 @@ class MobApp(App):
         if deco is None:
             return
         self._placing_deco = deco_id
-        self._placing_x = self._deco_positions.get(deco_id, deco.x_offset)
+        pos = self._deco_positions.get(deco_id)
+        self._placing_x = pos[0] if pos else deco.x_offset
+        self._placing_y = pos[1] if pos else deco.y_offset
         self._busy_pose = True
+        self.scene._place_blink_visible = True
         self._sync_deco_scene()
-        self._show_toast("← → to place, enter to confirm")
+        self._place_blink_tick()
+        self._show_toast("arrows to place, enter to confirm")
+
+    def _place_blink_tick(self) -> None:
+        if self._placing_deco is None:
+            return
+        self.scene._place_blink_visible = not self.scene._place_blink_visible
+        self._sync_deco_scene()
+        self.set_timer(0.4, self._place_blink_tick)
 
     def _sync_deco_scene(self) -> None:
-        self.scene.deco_positions = dict(self._deco_positions)
+        self.scene.deco_positions = {k: v for k, v in self._deco_positions.items()}
         if self._placing_deco:
-            self.scene.deco_positions[self._placing_deco] = self._placing_x
+            if self.scene._place_blink_visible:
+                self.scene.deco_positions[self._placing_deco] = (
+                    self._placing_x, self._placing_y,
+                )
+            else:
+                self.scene.deco_positions.pop(self._placing_deco, None)
         self.scene.equipped = tuple(self._equipped_decos)
 
     def _confirm_placement(self) -> None:
         deco_id = self._placing_deco
         if deco_id is None:
             return
-        self._deco_positions[deco_id] = self._placing_x
+        self._deco_positions[deco_id] = (self._placing_x, self._placing_y)
         if not self._dev:
-            deco_store.save_position(deco_id, self._placing_x)
+            deco_store.save_position(deco_id, self._placing_x, self._placing_y)
         self._placing_deco = None
         self._busy_pose = False
+        self.scene._place_blink_visible = True
         self._sync_deco_scene()
         self._show_toast("placed!")
 
@@ -1043,6 +1064,7 @@ class MobApp(App):
             self._equipped_decos = load_equipped()
         self._placing_deco = None
         self._busy_pose = False
+        self.scene._place_blink_visible = True
         self._sync_deco_scene()
         self._show_toast("cancelled")
 
@@ -1053,6 +1075,10 @@ class MobApp(App):
             self._placing_x = max(0, self._placing_x - 2)
         elif event.key == "right":
             self._placing_x = min(max(0, self.size.width - 4), self._placing_x + 2)
+        elif event.key == "up":
+            self._placing_y = self._placing_y + 1
+        elif event.key == "down":
+            self._placing_y = max(0, self._placing_y - 1)
         elif event.key == "enter":
             self._confirm_placement()
         elif event.key == "escape":

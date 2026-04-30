@@ -117,19 +117,27 @@ def save_purchase(decoration_id: str) -> None:
         pass
 
 
-def load_positions() -> dict[str, int]:
+def load_positions() -> dict[str, tuple[int, int]]:
     data = _load_all()
     pos = data.get("positions", {})
-    return {k: v for k, v in pos.items() if isinstance(k, str) and isinstance(v, int)}
+    result: dict[str, tuple[int, int]] = {}
+    for k, v in pos.items():
+        if not isinstance(k, str):
+            continue
+        if isinstance(v, int):
+            result[k] = (v, 0)
+        elif isinstance(v, list) and len(v) == 2:
+            result[k] = (int(v[0]), int(v[1]))
+    return result
 
 
-def save_position(decoration_id: str, x: int) -> None:
+def save_position(decoration_id: str, x: int, y: int) -> None:
     path = _path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = _load_all()
         positions = data.get("positions", {})
-        positions[decoration_id] = x
+        positions[decoration_id] = [x, y]
         data["positions"] = positions
         path.write_text(json.dumps(data, indent=2))
     except OSError:
