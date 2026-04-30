@@ -117,6 +117,25 @@ def save_purchase(decoration_id: str) -> None:
         pass
 
 
+def load_positions() -> dict[str, int]:
+    data = _load_all()
+    pos = data.get("positions", {})
+    return {k: v for k, v in pos.items() if isinstance(k, str) and isinstance(v, int)}
+
+
+def save_position(decoration_id: str, x: int) -> None:
+    path = _path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = _load_all()
+        positions = data.get("positions", {})
+        positions[decoration_id] = x
+        data["positions"] = positions
+        path.write_text(json.dumps(data, indent=2))
+    except OSError:
+        pass
+
+
 def toggle_equip(decoration_id: str) -> bool:
     """Toggle equip state. Returns new equipped state."""
     path = _path()

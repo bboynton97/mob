@@ -19,7 +19,9 @@ from textual.timer import Timer
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
 from mob import gems as gems_store, leaderboard, settings, xp as xp_store
-from mob.decorations import CATALOG as DECO_CATALOG, load_equipped, load_purchased
+from mob.decorations import (
+    CATALOG as DECO_CATALOG, load_equipped, load_positions, load_purchased,
+)
 from mob import decorations as deco_store
 from mob.art import ANIMALS, Animal
 from mob.atuin import AtuinPoller, CommandEvent, is_available as atuin_available
@@ -124,6 +126,7 @@ class CreatureScene(Static):
     def __init__(self, animal: Animal, **kwargs) -> None:
         super().__init__(**kwargs)
         self.animal = animal
+        self.deco_positions: dict[str, int] = {}
 
     def render(self) -> str:
         term_h = self.size.height if self.size.height > 0 else 24
@@ -133,12 +136,13 @@ class CreatureScene(Static):
             deco = DECO_CATALOG.get(deco_id)
             if deco is None:
                 continue
+            deco_x = self.deco_positions.get(deco_id, deco.x_offset)
             deco_art = deco.art.strip("\n").split("\n")
             deco_top = term_h - len(deco_art) - deco.y_offset
             for i, deco_line in enumerate(deco_art):
                 row = deco_top + i
                 if 0 <= row < term_h:
-                    lines[row] = " " * deco.x_offset + deco_line
+                    lines[row] = " " * deco_x + deco_line
 
         art = self.animal.poses[self.pose].strip("\n").split("\n")
         top_count = max(0, self.y - self.y_lift)
@@ -379,6 +383,9 @@ class MobApp(App):
         self._fed_recently: bool = False
         self._purchased_decos: list[str] = load_purchased()
         self._equipped_decos: list[str] = load_equipped()
+        self._deco_positions: dict[str, int] = load_positions()
+        self._placing_deco: str | None = None
+        self._placing_x: int = 0
         self._atuin: AtuinPoller | None = None
         self._xp_enabled: bool = bool(settings.get("xp_enabled", True))
         self._toast_running: bool = False
@@ -443,6 +450,7 @@ class MobApp(App):
         self.query_one("#gem-badge", Label).styles.color = contrast_shift(
             gem_base, self._bg, amount=0.25
         )
+        self.scene.deco_positions = dict(self._deco_positions)
         self.scene.equipped = tuple(self._equipped_decos)
         self.set_interval(8.0, self._maybe_blink)
         if self.animal.behavior.secondary_idles:
@@ -982,6 +990,68 @@ class MobApp(App):
         self._award_xp(100)
 
     # ------------------------------------------------------------------
+    # decoration placement
+
+    def _enter_placement(self, deco_id: str) -> None:
+        deco = DECO_CATALOG.get(deco_id)
+        if deco is None:
+            return
+        self._placing_deco = deco_id
+        self._placing_x = self._deco_positions.get(deco_id, deco.x_offset)
+        self._busy_pose = True
+        self._sync_deco_scene()
+        self._show_toast("← → to place, enter to confirm")
+
+    def _sync_deco_scene(self) -> None:
+        self.scene.deco_positions = dict(self._deco_positions)
+        if self._placing_deco:
+            self.scene.deco_positions[self._placing_deco] = self._placing_x
+        self.scene.equipped = tuple(self._equipped_decos)
+
+    def _confirm_placement(self) -> None:
+        deco_id = self._placing_deco
+        if deco_id is None:
+            return
+        self._deco_positions[deco_id] = self._placing_x
+        if not self._dev:
+            deco_store.save_position(deco_id, self._placing_x)
+        self._placing_deco = None
+        self._busy_pose = False
+        self._sync_deco_scene()
+        self._show_toast("placed!")
+
+    def _cancel_placement(self) -> None:
+        deco_id = self._placing_deco
+        if deco_id is None:
+            return
+        if deco_id in self._equipped_decos:
+            self._equipped_decos.remove(deco_id)
+        if not self._dev and deco_id in self._purchased_decos:
+            deco_store.toggle_equip(deco_id)
+            self._equipped_decos = load_equipped()
+        self._placing_deco = None
+        self._busy_pose = False
+        self._sync_deco_scene()
+        self._show_toast("cancelled")
+
+    def on_key(self, event) -> None:
+        if self._placing_deco is None:
+            return
+        if event.key == "left":
+            self._placing_x = max(0, self._placing_x - 2)
+        elif event.key == "right":
+            self._placing_x = min(max(0, self.size.width - 4), self._placing_x + 2)
+        elif event.key == "enter":
+            self._confirm_placement()
+        elif event.key == "escape":
+            self._cancel_placement()
+        else:
+            return
+        self._sync_deco_scene()
+        event.stop()
+        event.prevent_default()
+
+    # ------------------------------------------------------------------
     # HUD / command palette
 
     def _refresh_hud(self) -> None:
@@ -1191,35 +1261,35 @@ class MobApp(App):
         if deco is None:
             return
         already_owned = deco_id in self._purchased_decos
-        if self._dev and not already_owned:
-            if deco_id not in self._equipped_decos:
-                self._equipped_decos.append(deco_id)
-            self._purchased_decos = list(self._equipped_decos)
-            self.scene.equipped = tuple(self._equipped_decos)
-            self._show_toast(f"previewing {deco.name}")
-            return
         if already_owned:
-            if self._dev:
-                if deco_id in self._equipped_decos:
+            if deco_id in self._equipped_decos:
+                if self._dev:
                     self._equipped_decos.remove(deco_id)
                 else:
-                    self._equipped_decos.append(deco_id)
+                    deco_store.toggle_equip(deco_id)
+                    self._equipped_decos = load_equipped()
+                self._sync_deco_scene()
+                self._show_toast(f"{deco.name} hidden")
             else:
-                deco_store.toggle_equip(deco_id)
-                self._equipped_decos = load_equipped()
-            self.scene.equipped = tuple(self._equipped_decos)
-            visible = deco_id in self._equipped_decos
-            self._show_toast(f"{deco.name} {'shown' if visible else 'hidden'}")
+                if self._dev:
+                    self._equipped_decos.append(deco_id)
+                else:
+                    deco_store.toggle_equip(deco_id)
+                    self._equipped_decos = load_equipped()
+                self._enter_placement(deco_id)
             return
-        if self._gems < deco.cost:
-            self._show_toast("not enough gems")
-            return
-        self._award_gems(-deco.cost)
-        deco_store.save_purchase(deco_id)
-        self._purchased_decos = load_purchased()
-        self._equipped_decos = load_equipped()
-        self.scene.equipped = tuple(self._equipped_decos)
-        self._show_toast(f"bought {deco.name}!")
+        if not self._dev:
+            if self._gems < deco.cost:
+                self._show_toast("not enough gems")
+                return
+            self._award_gems(-deco.cost)
+            deco_store.save_purchase(deco_id)
+            self._purchased_decos = load_purchased()
+            self._equipped_decos = load_equipped()
+        else:
+            self._purchased_decos.append(deco_id)
+            self._equipped_decos.append(deco_id)
+        self._enter_placement(deco_id)
 
     def _submit_xp_worker(self) -> None:
         cfg = self._leaderboard_cfg
