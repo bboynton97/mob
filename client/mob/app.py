@@ -1017,6 +1017,8 @@ class MobApp(App):
         self._placing_x = pos[0] if pos else deco.x_offset
         self._placing_y = pos[1] if pos else deco.y_offset
         self._busy_pose = True
+        self._hopping = False
+        self.scene.pose = "idle"
         self.scene._place_blink_visible = True
         self._sync_deco_scene()
         self._place_blink_tick()
@@ -1031,14 +1033,14 @@ class MobApp(App):
 
     def _sync_deco_scene(self) -> None:
         self.scene.deco_positions = {k: v for k, v in self._deco_positions.items()}
+        equipped = list(self._equipped_decos)
         if self._placing_deco:
-            if self.scene._place_blink_visible:
-                self.scene.deco_positions[self._placing_deco] = (
-                    self._placing_x, self._placing_y,
-                )
-            else:
-                self.scene.deco_positions.pop(self._placing_deco, None)
-        self.scene.equipped = tuple(self._equipped_decos)
+            self.scene.deco_positions[self._placing_deco] = (
+                self._placing_x, self._placing_y,
+            )
+            if not self.scene._place_blink_visible:
+                equipped = [d for d in equipped if d != self._placing_deco]
+        self.scene.equipped = tuple(equipped)
 
     def _confirm_placement(self) -> None:
         deco_id = self._placing_deco
@@ -1050,6 +1052,7 @@ class MobApp(App):
         self._placing_deco = None
         self._busy_pose = False
         self.scene._place_blink_visible = True
+        self.scene.pose = "sleeping" if self._asleep else "idle"
         self._sync_deco_scene()
         self._show_toast("placed!")
 
@@ -1065,6 +1068,7 @@ class MobApp(App):
         self._placing_deco = None
         self._busy_pose = False
         self.scene._place_blink_visible = True
+        self.scene.pose = "sleeping" if self._asleep else "idle"
         self._sync_deco_scene()
         self._show_toast("cancelled")
 
@@ -1079,7 +1083,7 @@ class MobApp(App):
             self._placing_y = self._placing_y + 1
         elif event.key == "down":
             self._placing_y = max(0, self._placing_y - 1)
-        elif event.key == "enter":
+        elif event.key in ("enter", "space"):
             self._confirm_placement()
         elif event.key == "escape":
             self._cancel_placement()
