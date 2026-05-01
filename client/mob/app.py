@@ -462,10 +462,9 @@ class MobApp(App):
         self.query_one("#xp-badge", Label).styles.color = contrast_shift(
             xp_base, self._bg
         )
-        gem_base = self._fg or "#cccccc"
-        self.query_one("#gem-badge", Label).styles.color = contrast_shift(
-            gem_base, self._bg, amount=0.25
-        )
+        gem_muted = contrast_shift(self._fg or "#cccccc", self._bg, amount=0.25)
+        gem_tinted = contrast_shift(gem_muted, "#6a0dad", amount=0.3)
+        self.query_one("#gem-badge", Label).styles.color = gem_tinted
         self.scene.deco_positions = {k: v for k, v in self._deco_positions.items()}
         self.scene.equipped = tuple(self._equipped_decos)
         self.set_interval(8.0, self._maybe_blink)
