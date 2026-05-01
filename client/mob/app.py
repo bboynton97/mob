@@ -387,7 +387,7 @@ class MobApp(App):
         self._fg = fg
         self._bg = bg
         self._asleep = False
-        self._hopping = False
+        self._moving = False
         self._busy_pose = False
         self._hops_left_in_burst = 0
         self._pet_name: str | None = _load_pet_name(animal.name)
@@ -510,6 +510,7 @@ class MobApp(App):
             self._stop_atuin()
         self._refresh_menu()
         self._refresh_xp_badge()
+        self._refresh_gem_badge()
 
     def _after_atuin_confirm(self, install: bool) -> None:
         if not install:
@@ -572,6 +573,7 @@ class MobApp(App):
     def _refresh_gem_badge(self) -> None:
         badge = self.query_one("#gem-badge", Label)
         badge.update(format_gems(self._gems))
+        badge.display = self._xp_enabled
 
     def _total_xp(self) -> int:
         others = (
@@ -596,7 +598,7 @@ class MobApp(App):
         self._award_gems(round(random.uniform(0.1, 0.3), 1))
         if self._asleep and random.random() < 0.05:
             self._asleep = False
-            if not self._busy_pose and not self._hopping:
+            if not self._busy_pose and not self._moving:
                 self.scene.pose = "idle"
 
     def _award_xp(self, amount: int) -> None:
@@ -677,7 +679,7 @@ class MobApp(App):
         if self._hops_left_in_burst <= 0:
             self._schedule_next_burst()
             return
-        if self._asleep or self._busy_pose:
+        if self._asleep or self._busy_pose or self._moving:
             self.set_timer(1.0, self._continue_burst)
             return
         self._hops_left_in_burst -= 1
@@ -690,7 +692,7 @@ class MobApp(App):
     # idle
 
     def _maybe_blink(self) -> None:
-        if self._asleep or self._hopping or self._busy_pose:
+        if self._asleep or self._moving or self._busy_pose:
             return
         if self.scene.pose != "idle" or random.random() > 0.5:
             return
@@ -698,7 +700,7 @@ class MobApp(App):
         self.set_timer(0.18, lambda: setattr(self.scene, "pose", "idle"))
 
     def _maybe_sleep(self) -> None:
-        if self._asleep or self._hopping or self._busy_pose:
+        if self._asleep or self._moving or self._busy_pose:
             return
         if self.scene.pose not in ("idle", "idle2"):
             return
@@ -709,7 +711,7 @@ class MobApp(App):
         self.set_timer(random.uniform(60.0, 300.0), self._auto_wake)
 
     def _breathe_sleep(self) -> None:
-        if not self._asleep or self._busy_pose or self._hopping:
+        if not self._asleep or self._busy_pose or self._moving:
             return
         if self.scene.pose == "sleeping":
             self.scene.pose = "sleeping2"
@@ -720,11 +722,11 @@ class MobApp(App):
         if not self._asleep:
             return
         self._asleep = False
-        if not self._busy_pose and not self._hopping:
+        if not self._busy_pose and not self._moving:
             self.scene.pose = "idle"
 
     def _maybe_secondary_idle(self) -> None:
-        if self._asleep or self._hopping or self._busy_pose:
+        if self._asleep or self._moving or self._busy_pose:
             return
         if self.scene.pose != "idle":
             return
@@ -772,7 +774,7 @@ class MobApp(App):
             (start_x + round(dx * 0.85), 1),
             (target_x, 0),
         ]
-        self._hopping = True
+        self._moving = True
         self.scene.pose = "hop"
         self._run_frames(frames)
 
@@ -808,7 +810,7 @@ class MobApp(App):
         pose = "walk_left" if direction < 0 else "walk_right"
         if pose not in self.animal.poses:
             pose = "idle"
-        self._hopping = True
+        self._moving = True
         self.scene.pose = pose
         step_x = 1 if direction > 0 else -1
         self._crawl_step(target_x, target_y, step_x)
@@ -816,7 +818,7 @@ class MobApp(App):
     def _crawl_step(self, target_x: int, target_y: int, step_x: int) -> None:
         arrived = self.scene.x == target_x and self.scene.y == target_y
         if self._asleep or arrived:
-            self._hopping = False
+            self._moving = False
             if not self._asleep and not self._busy_pose:
                 self.scene.pose = "idle"
             self.set_timer(random.uniform(0.8, 2.0), self._continue_burst)
@@ -857,7 +859,7 @@ class MobApp(App):
 
     def _run_frames(self, frames: list[tuple[int, int]]) -> None:
         if not frames:
-            self._hopping = False
+            self._moving = False
             if not self._asleep and not self._busy_pose:
                 self.scene.pose = "idle"
             self.set_timer(random.uniform(0.25, 0.8), self._continue_burst)
@@ -871,7 +873,7 @@ class MobApp(App):
     # interactions
 
     def _flash_pose(self, pose: str, seconds: float = 1.2) -> None:
-        if self._hopping:
+        if self._moving:
             return
         self._busy_pose = True
         self.scene.pose = pose
@@ -883,7 +885,7 @@ class MobApp(App):
         self.set_timer(seconds, restore)
 
     def action_feed(self) -> None:
-        if self._asleep or self._hopping or self._busy_pose:
+        if self._asleep or self._moving or self._busy_pose:
             return
         if self._fed_recently:
             name = self._pet_name or self.animal.name
@@ -942,7 +944,7 @@ class MobApp(App):
         self._play_hearts()
 
     def action_toy(self) -> None:
-        if self._asleep or self._hopping:
+        if self._asleep or self._moving:
             return
         if self.animal.behavior.movement == "crawl":
             self._start_random_crawl()
@@ -1000,7 +1002,7 @@ class MobApp(App):
         self.scene.nyan_frame = -1
         self._nyan_playing = False
         self._busy_pose = False
-        self._hopping = False
+        self._moving = False
         self.scene.pose = "sleeping" if self._asleep else "idle"
         self._award_xp(100)
 
@@ -1016,7 +1018,7 @@ class MobApp(App):
         self._placing_x = pos[0] if pos else deco.x_offset
         self._placing_y = pos[1] if pos else deco.y_offset
         self._busy_pose = True
-        self._hopping = False
+        self._moving = False
         self.scene.pose = "idle"
         self.scene._place_blink_visible = True
         self._sync_deco_scene()
