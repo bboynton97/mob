@@ -13,9 +13,15 @@ curl -fsSL https://raw.githubusercontent.com/bboynton97/mob/main/scripts/install
 
 run `mob cat` or `mob frog`
 
-## xp
+## features
 
-Your pet earns 2 xp for every successful shell command. Total xp lives top-left, and each command floats a `+2 xp` toast above your pet.
+- XP - 2xp per command run in any terminal (syncs between devices too)
+- gems - in terminal currency! you can gamble it or buy things for your pet
+- leaderboard - who's shipping more? your pet will tell all
+
+Sometimes your pet falls asleep! Every command has a 2% chance of waking them up (shh!). Sometimes they get hyper and run around. 
+
+Connect your machines to sync xp between them with some neat [public key trickery](docs/architecture.md). 
 
 ### setup
 
@@ -35,19 +41,14 @@ Already have atuin set up? Skip step 2. Toggling on is all you need.
 
 <img src="docs/xp.gif" alt="xp syncing via atuin" width="100%">
 
-## name your pet
-
-Open `/` and pick "Give pet a name". The name persists across sessions.
-
 ## contribute a critter
 
 Got an idea for a new animal? Open a PR ♡
-
-Critters live in [`client/mob/art.py`](client/mob/art.py) as ASCII poses (idle, happy, eating, sleeping, blink, plus movement frames). Keep the width consistent across poses, pick `hop` or `crawl` for movement, and that's basically it. Bonus points for something weird (axolotl? tardigrade? roomba?).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
 ```
     ∧,,,∧
-   (  ̳• · • ̳)
+   (  ̳•·• ̳)
    /    づ♡   thank u for contributing
 ```
 
