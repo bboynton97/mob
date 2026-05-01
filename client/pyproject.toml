@@ -1,6 +1,6 @@
 [project]
 name = "mob"
-version = "0.1.2"
+version = "0.2.0"
 description = "Tiny creatures who live at the bottom of your terminal."
 requires-python = ">=3.11"
 dependencies = [
