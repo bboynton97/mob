@@ -30,7 +30,7 @@ _register(
     Decoration(
         id="yarn",
         name="Yarn ball",
-        cost=15,
+        cost=50,
         x_offset=10,
         art=r"""
  _
@@ -40,7 +40,7 @@ _register(
     Decoration(
         id="plant",
         name="Potted plant",
-        cost=25,
+        cost=200,
         x_offset=2,
         art=r"""
  \|/
@@ -51,7 +51,7 @@ _register(
     Decoration(
         id="fish",
         name="Fishbowl",
-        cost=40,
+        cost=750,
         x_offset=30,
         art=r"""
  .--.
@@ -62,7 +62,7 @@ _register(
     Decoration(
         id="bed",
         name="Pet bed",
-        cost=50,
+        cost=2500,
         x_offset=18,
         art=r"""
 .______.
