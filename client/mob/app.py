@@ -817,26 +817,24 @@ class MobApp(App):
 
     def _crawl_step(self, target_x: int, target_y: int, step_x: int) -> None:
         arrived = self.scene.x == target_x and self.scene.y == target_y
-        if self._asleep or arrived:
+        if self._asleep or not self._moving or arrived:
             self._moving = False
             if not self._asleep and not self._busy_pose:
                 self.scene.pose = "idle"
             self.set_timer(random.uniform(0.8, 2.0), self._continue_burst)
             return
 
+        # Enforce the correct walk pose before moving.
+        base = "walk_left" if step_x < 0 else "walk_right"
+        alt = base + "2"
+        current = self.scene.pose
+        if current not in (base, alt):
+            self.scene.pose = base if base in self.animal.poses else "idle"
+        elif alt in self.animal.poses:
+            self.scene.pose = alt if current == base else base
+
         if self.scene.x != target_x:
             self.scene.x += step_x
-
-        # Alternate between the two walk frames for a little animation.
-        current = self.scene.pose
-        if current in ("walk_left", "walk_left2"):
-            alt = "walk_left2" if current == "walk_left" else "walk_left"
-            if alt in self.animal.poses:
-                self.scene.pose = alt
-        elif current in ("walk_right", "walk_right2"):
-            alt = "walk_right2" if current == "walk_right" else "walk_right"
-            if alt in self.animal.poses:
-                self.scene.pose = alt
 
         # Move y probabilistically, weighted by how much vertical distance
         # remains relative to horizontal — keeps the path roughly diagonal.
@@ -858,12 +856,14 @@ class MobApp(App):
         )
 
     def _run_frames(self, frames: list[tuple[int, int]]) -> None:
-        if not frames:
+        if not frames or not self._moving:
             self._moving = False
             if not self._asleep and not self._busy_pose:
                 self.scene.pose = "idle"
             self.set_timer(random.uniform(0.25, 0.8), self._continue_burst)
             return
+        if "hop" in self.animal.poses:
+            self.scene.pose = "hop"
         x, y = frames[0]
         self.scene.x = x
         self.scene.y_lift = y
@@ -968,7 +968,7 @@ class MobApp(App):
     # nyan
 
     def _play_nyan(self) -> None:
-        if self._nyan_playing:
+        if self._nyan_playing or self._moving:
             return
         self._nyan_playing = True
         self._nyan_orig_x = self.scene.x
